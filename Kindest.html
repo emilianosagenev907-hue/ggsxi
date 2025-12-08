@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Filtro con cámara</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      font-family: Arial, sans-serif;
+      /* FONDO ARCOÍRIS */
+      background: radial-gradient(circle,
+        #000000 0%,
+        #0058ff 35%,
+        #0070ff 55%,
+        #ff4b5c 75%,
+        #ff0000 100%
+      );
+    }
+
+    .viewer {
+      position: relative;
+      display: inline-block;
+      overflow: hidden;
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    }
+
+    video {
+      width: 500px;
+      border-radius: 20px;
+      background: #000;
+      display: block;
+    }
+
+    /* EMOJI FILTRO (solo auto, sin mouse) */
+    #emoji {
+      position: absolute;
+      top: 50px;
+      left: 50px;
+      font-size: 150px;    /* GRANDE */
+      display: none;
+      user-select: none;
+      pointer-events: none; /* no se puede tocar */
+    }
+
+    button {
+      padding: 10px 20px;
+      font-size: 17px;
+      border: none;
+      background: #0a84ff;
+      color: white;
+      border-radius: 8px;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    button:hover {
+      background: #006bd6;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="viewer">
+    <video id="cam" autoplay playsinline></video>
+    <div id="emoji">😎</div>
+  </div>
+
+  <button id="fotoBtn">Tomar foto 📸</button>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <!-- MEDIAPIPE FACE DETECTION -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+
+  <script>
+    const video   = document.getElementById("cam");
+    const emoji   = document.getElementById("emoji");
+    const canvas  = document.getElementById("canvas");
+    const fotoBtn = document.getElementById("fotoBtn");
+
+    let mpFace   = null;
+    let mpReady  = false;
+
+    // --------- CÁMARA ----------
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+
+        video.addEventListener("loadedmetadata", () => {
+          emoji.style.display = "block";
+          initMediaPipe();  // iniciamos detección cuando ya hay video
+        });
+
+      } catch (err) {
+        alert("No se pudo acceder a la cámara. Revisa permisos del navegador.\n" + err);
+      }
+    }
+
+    // --------- MEDIAPIPE (SEGUIMIENTO CARA) ----------
+    function initMediaPipe() {
+      if (!window.FaceDetection) {
+        console.log("MediaPipe no cargó.");
+        return;
+      }
+
+      mpFace = new FaceDetection.FaceDetection({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+      });
+
+      mpFace.setOptions({
+        model: 'short',
+        minDetectionConfidence: 0.5
+      });
+
+      mpFace.onResults(onResultsMP);
+      mpReady = true;
+      loopMediaPipe();
+    }
+
+    async function loopMediaPipe() {
+      const loop = async () => {
+        if (mpReady && video.readyState >= 2) {
+          try {
+            await mpFace.send({ image: video });
+          } catch (e) {
+            console.error(e);
+          }
+        }
+        requestAnimationFrame(loop);
+      };
+      loop();
+    }
+
+    // colocar emoji según la detección (solo automático)
+    function onResultsMP(results) {
+      if (!results.detections || results.detections.length === 0) return;
+
+      const det  = results.detections[0];
+      const box  = det.locationData.relativeBoundingBox;
+
+      // usamos el tamaño del CONTENEDOR (.viewer)
+      const viewerRect = video.parentElement.getBoundingClientRect();
+      const viewerW = viewerRect.width;
+      const viewerH = viewerRect.height;
+
+      // centro de la cara en coords del contenedor
+      const centerX = (box.xmin + box.width / 2) * viewerW;
+      const topY    = (box.ymin - 0.4 * box.height) * viewerH; // un poco arriba de la cara
+
+      emoji.style.left = (centerX - emoji.offsetWidth / 2) + "px";
+      emoji.style.top  = topY + "px";
+    }
+
+    // --------- TOMAR FOTO ----------
+    fotoBtn.addEventListener("click", () => {
+      if (!video.videoWidth || !video.videoHeight) {
+        alert("Espera a que cargue la cámara 😉");
+        return;
+      }
+
+      const ctx = canvas.getContext("2d");
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const videoRect  = video.getBoundingClientRect();
+      const emojiRect  = emoji.getBoundingClientRect();
+      const viewerRect = video.parentElement.getBoundingClientRect();
+
+      // posición del emoji relativa al video dentro del contenedor
+      const relX = (emojiRect.left - viewerRect.left);
+      const relY = (emojiRect.top  - viewerRect.top);
+
+      const scaleX = canvas.width  / videoRect.width;
+      const scaleY = canvas.height / videoRect.height;
+
+      const emojiCanvasX = relX * scaleX;
+      const emojiCanvasY = relY * scaleY;
+
+      const fontSizePx = parseInt(window.getComputedStyle(emoji).fontSize);
+      ctx.font = fontSizePx + "px Arial";
+      ctx.textBaseline = "top";
+      ctx.fillText(emoji.textContent, emojiCanvasX, emojiCanvasY);
+
+      const link = document.createElement("a");
+      link.download = "foto_filtro.png";
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    });
+
+    // arrancamos todo
+    startCamera();
+  </script>
+</body>
+</html>
