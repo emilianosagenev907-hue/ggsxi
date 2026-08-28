@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Filtro con cámara</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overscroll-behavior: none;   /* que no "rebote" al arrastrar */
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    body {
+      min-height: 100dvh;          /* alto real del celu, sin barras */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: #fff;
+      /* FONDO ARCOÍRIS */
+      background: radial-gradient(circle,
+        #000000 0%,
+        #0058ff 35%,
+        #0070ff 55%,
+        #ff4b5c 75%,
+        #ff0000 100%
+      );
+      background-attachment: fixed;
+    }
+
+    .viewer {
+      position: relative;
+      width: 100%;
+      max-width: 500px;            /* en PC se ve igual que antes */
+      overflow: hidden;
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      background: #000;
+      line-height: 0;
+    }
+
+    video {
+      width: 100%;
+      height: auto;                /* el contenedor calca al video */
+      display: block;
+      background: #000;
+    }
+
+    /* cámara frontal en espejo, como cualquier app del celu */
+    video.espejo { transform: scaleX(-1); }
+
+    /* EMOJI FILTRO (solo auto, sin mouse) */
+    #emoji {
+      position: absolute;
+      top: 0;
+      left: 0;
+      font-size: 150px;
+      line-height: 1;
+      display: none;
+      pointer-events: none;
+      will-change: transform, font-size;
+    }
+
+    .controles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      width: 100%;
+      max-width: 500px;
+    }
+
+    button {
+      flex: 1 1 auto;
+      min-height: 52px;            /* dedo, no mouse */
+      padding: 14px 20px;
+      font-size: 17px;
+      font-family: inherit;
+      border: none;
+      background: #0a84ff;
+      color: white;
+      border-radius: 12px;
+      cursor: pointer;
+      touch-action: manipulation;  /* sin zoom al doble toque ni delay */
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    button:active { background: #006bd6; transform: scale(0.98); }
+    button:disabled { opacity: .5; }
+
+    @media (hover: hover) {
+      button:hover { background: #006bd6; }
+    }
+
+    /* pantalla de arranque: el celu pide permiso recién con un toque */
+    #inicio {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      padding: 24px;
+      text-align: center;
+      background: rgba(0,0,0,.75);
+      backdrop-filter: blur(6px);
+    }
+
+    #inicio h1 { margin: 0; font-size: 24px; }
+    #inicio p  { margin: 0; max-width: 320px; font-size: 15px; opacity: .85; line-height: 1.45; }
+    #inicio button { flex: 0 0 auto; min-width: 220px; font-size: 18px; }
+
+    /* la foto lista: en el celu se guarda desde acá */
+    #resultado {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+      background: rgba(0,0,0,.9);
+    }
+
+    #resultado img {
+      max-width: 100%;
+      max-height: 65dvh;
+      border-radius: 14px;
+      -webkit-user-select: auto;
+      user-select: auto;
+      -webkit-touch-callout: default;  /* dejar "mantener presionado > guardar" */
+    }
+
+    #resultado .controles { max-width: 420px; }
+    #ayudaGuardar { font-size: 14px; opacity: .8; margin: 0; text-align: center; }
+
+    #aviso {
+      max-width: 500px;
+      margin: 0;
+      font-size: 14px;
+      text-align: center;
+      opacity: .9;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="viewer">
+    <video id="cam" autoplay playsinline muted></video>
+    <div id="emoji">😎</div>
+  </div>
+
+  <div class="controles">
+    <button id="fotoBtn">Tomar foto 📸</button>
+    <button id="camBtn">Girar cámara 🔄</button>
+  </div>
+
+  <p id="aviso"></p>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <!-- pantalla de arranque -->
+  <div id="inicio">
+    <h1>Filtro con cámara</h1>
+    <p>Tocá el botón y dale permiso a la cámara. El emoji se pega solo a tu cara.</p>
+    <button id="iniciarBtn">Activar cámara 🎥</button>
+  </div>
+
+  <!-- foto lista -->
+  <div id="resultado">
+    <img id="fotoPreview" alt="Foto con el filtro">
+    <p id="ayudaGuardar">Mantené presionada la foto y elegí «Guardar imagen».</p>
+    <div class="controles">
+      <button id="guardarBtn">Guardar 💾</button>
+      <button id="cerrarBtn">Volver ↩️</button>
+    </div>
+  </div>
+
+  <!-- MEDIAPIPE FACE DETECTION -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+
+  <script>
+    const video    = document.getElementById("cam");
+    const emoji    = document.getElementById("emoji");
+    const canvas   = document.getElementById("canvas");
+    const fotoBtn  = document.getElementById("fotoBtn");
+    const camBtn   = document.getElementById("camBtn");
+    const aviso    = document.getElementById("aviso");
+    const inicio   = document.getElementById("inicio");
+    const iniciarBtn = document.getElementById("iniciarBtn");
+
+    const resultado    = document.getElementById("resultado");
+    const fotoPreview  = document.getElementById("fotoPreview");
+    const guardarBtn   = document.getElementById("guardarBtn");
+    const cerrarBtn    = document.getElementById("cerrarBtn");
+    const ayudaGuardar = document.getElementById("ayudaGuardar");
+
+    let mpFace   = null;
+    let mpReady  = false;
+    let ocupado  = false;      // que no se encimen los frames en el celu
+    let frame    = 0;
+    let stream   = null;
+    let camara   = "user";     // "user" = frontal, "environment" = trasera
+    let ultimaFoto = null;
+
+    // posición suavizada del emoji (en el celu tiembla mucho si no)
+    let pos = null;
+
+    // --------- CÁMARA ----------
+    async function startCamera() {
+      pararCamara();
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: camara,
+            width:  { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+
+        video.srcObject = stream;
+        video.classList.toggle("espejo", camara === "user");
+        await video.play().catch(() => {});
+
+        emoji.style.display = "block";
+        centrarEmoji();          // mientras no detecte cara, que no quede en la esquina
+        aviso.textContent = "";
+        inicio.style.display = "none";
+
+        initMediaPipe();  // iniciamos detección cuando ya hay video
+
+      } catch (err) {
+        inicio.style.display = "flex";
+        aviso.textContent = "No se pudo abrir la cámara: " + err.name;
+
+        if (!window.isSecureContext) {
+          aviso.textContent = "La cámara solo funciona con HTTPS (o localhost). Abrí la página con https://";
+        } else if (err.name === "NotAllowedError") {
+          aviso.textContent = "Diste que no al permiso. Habilitá la cámara para este sitio en los ajustes del navegador.";
+        }
+      }
+    }
+
+    function centrarEmoji() {
+      const r = video.parentElement.getBoundingClientRect();
+      if (!r.width) return;
+      pos = { x: r.width / 2, y: r.height * 0.15, t: Math.max(60, r.width * 0.35) };
+      emoji.style.fontSize = pos.t + "px";
+      emoji.style.transform = `translate(${pos.x - emoji.offsetWidth / 2}px, ${pos.y}px)`;
+    }
+
+    function pararCamara() {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+    }
+
+    // --------- MEDIAPIPE (SEGUIMIENTO CARA) ----------
+    function initMediaPipe() {
+      if (mpReady) return;
+
+      if (!window.FaceDetection) {
+        aviso.textContent = "No cargó el detector de caras. Revisá la conexión.";
+        return;
+      }
+
+      mpFace = new FaceDetection.FaceDetection({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+      });
+
+      mpFace.setOptions({
+        model: 'short',
+        minDetectionConfidence: 0.5
+      });
+
+      mpFace.onResults(onResultsMP);
+      mpReady = true;
+      loopMediaPipe();
+    }
+
+    function loopMediaPipe() {
+      const loop = async () => {
+        frame++;
+        // en el celu procesamos 1 de cada 2 frames: menos calor y menos batería
+        if (mpReady && !ocupado && frame % 2 === 0 && video.readyState >= 2) {
+          ocupado = true;
+          try {
+            await mpFace.send({ image: video });
+          } catch (e) {
+            console.error(e);
+          }
+          ocupado = false;
+        }
+        requestAnimationFrame(loop);
+      };
+      loop();
+    }
+
+    // colocar emoji según la detección (solo automático)
+    function onResultsMP(results) {
+      if (!results.detections || results.detections.length === 0) return;
+
+      const det = results.detections[0];
+      const box = det.locationData.relativeBoundingBox;
+
+      // usamos el tamaño del CONTENEDOR (.viewer)
+      const viewerRect = video.parentElement.getBoundingClientRect();
+      const viewerW = viewerRect.width;
+      const viewerH = viewerRect.height;
+
+      // MediaPipe ve el video sin espejar; la pantalla sí está espejada
+      let cx = (box.xmin + box.width / 2);
+      if (camara === "user") cx = 1 - cx;
+
+      const destino = {
+        x: cx * viewerW,
+        y: (box.ymin - 0.4 * box.height) * viewerH,   // un poco arriba de la cara
+        t: Math.max(40, box.width * viewerW * 1.4)    // el emoji crece con la cara
+      };
+
+      // suavizado, si no tiembla
+      if (!pos) {
+        pos = destino;
+      } else {
+        pos.x += (destino.x - pos.x) * 0.35;
+        pos.y += (destino.y - pos.y) * 0.35;
+        pos.t += (destino.t - pos.t) * 0.20;
+      }
+
+      emoji.style.fontSize = pos.t + "px";
+      emoji.style.transform = `translate(${pos.x - emoji.offsetWidth / 2}px, ${pos.y}px)`;
+    }
+
+    // --------- TOMAR FOTO ----------
+    fotoBtn.addEventListener("click", () => {
+      if (!video.videoWidth || !video.videoHeight) {
+        aviso.textContent = "Esperá a que cargue la cámara 😉";
+        return;
+      }
+
+      const ctx = canvas.getContext("2d");
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      // la foto sale igual que lo que ves: si el preview está espejado, la foto también
+      ctx.save();
+      if (camara === "user") {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();   // el emoji NO va espejado
+
+      const viewerRect = video.parentElement.getBoundingClientRect();
+      const emojiRect  = emoji.getBoundingClientRect();
+
+      // posición del emoji relativa al contenedor, pasada a píxeles del canvas
+      const escalaX = canvas.width  / viewerRect.width;
+      const escalaY = canvas.height / viewerRect.height;
+
+      const emojiCanvasX = (emojiRect.left - viewerRect.left) * escalaX;
+      const emojiCanvasY = (emojiRect.top  - viewerRect.top)  * escalaY;
+
+      const fontSizePx = parseFloat(window.getComputedStyle(emoji).fontSize);
+      ctx.font = (fontSizePx * escalaX) + "px Arial";
+      ctx.textBaseline = "top";
+      ctx.fillText(emoji.textContent, emojiCanvasX, emojiCanvasY);
+
+      canvas.toBlob(mostrarFoto, "image/png");
+    });
+
+    // en el celu no sirve el <a download>: mostramos la foto y la compartimos/guardamos
+    function mostrarFoto(blob) {
+      if (!blob) return;
+      if (ultimaFoto) URL.revokeObjectURL(ultimaFoto.url);
+
+      ultimaFoto = { blob, url: URL.createObjectURL(blob) };
+      fotoPreview.src = ultimaFoto.url;
+      resultado.style.display = "flex";
+
+      const archivo = new File([blob], "foto_filtro.png", { type: "image/png" });
+      const sePuedeCompartir = navigator.canShare && navigator.canShare({ files: [archivo] });
+      ayudaGuardar.textContent = sePuedeCompartir
+        ? "«Guardar» abre el menú del celu para mandarla o guardarla en la galería."
+        : "Si «Guardar» no hace nada, mantené presionada la foto y elegí «Guardar imagen».";
+    }
+
+    guardarBtn.addEventListener("click", async () => {
+      if (!ultimaFoto) return;
+
+      const archivo = new File([ultimaFoto.blob], "foto_filtro.png", { type: "image/png" });
+
+      // celular: menú nativo de compartir/guardar
+      if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+        try {
+          await navigator.share({ files: [archivo], title: "Foto con filtro" });
+          return;
+        } catch (e) {
+          if (e.name === "AbortError") return;   // el usuario canceló
+        }
+      }
+
+      // PC (y celus viejos): descarga de toda la vida
+      const link = document.createElement("a");
+      link.download = "foto_filtro.png";
+      link.href = ultimaFoto.url;
+      link.click();
+    });
+
+    cerrarBtn.addEventListener("click", () => {
+      resultado.style.display = "none";
+    });
+
+    // --------- CAMBIAR DE CÁMARA (frontal / trasera) ----------
+    camBtn.addEventListener("click", async () => {
+      camBtn.disabled = true;
+      camara = (camara === "user") ? "environment" : "user";
+      pos = null;
+      await startCamera();
+      camBtn.disabled = false;
+    });
+
+    // --------- ARRANQUE ----------
+    // el permiso de cámara en el celu tiene que salir de un toque
+    iniciarBtn.addEventListener("click", startCamera);
+
+    // si volvés a la app después de mandarla al fondo, la cámara se reengancha
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && stream) video.play().catch(() => {});
+    });
+
+    window.addEventListener("pagehide", pararCamara);
+  </script>
+</body>
+</html>
