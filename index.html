@@ -3,453 +3,1256 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#101418">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Filtro con cámara</title>
+  <title>Escáner de libros</title>
   <style>
-    * { box-sizing: border-box; }
+    :root {
+      --fondo:   #101418;
+      --panel:   #1a2027;
+      --borde:   #2b3540;
+      --texto:   #eef2f6;
+      --suave:   #9fb0c0;
+      --azul:    #0a84ff;
+      --verde:   #30d158;
+      --rojo:    #ff453a;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
     html, body {
       margin: 0;
       padding: 0;
       height: 100%;
-      overscroll-behavior: none;   /* que no "rebote" al arrastrar */
+      overscroll-behavior: none;
       -webkit-user-select: none;
       user-select: none;
     }
 
     body {
-      min-height: 100dvh;          /* alto real del celu, sin barras */
-      display: flex;
+      min-height: 100dvh;
+      background: var(--fondo);
+      color: var(--texto);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      font-size: 16px;
+    }
+
+    /* ---------- vistas ---------- */
+    .vista {
+      display: none;
       flex-direction: column;
+      height: 100dvh;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .vista.activa { display: flex; }
+
+    .barra {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--borde);
+      background: var(--panel);
+      flex: 0 0 auto;
+    }
+    .barra h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+    .barra .contador { font-size: 14px; color: var(--suave); }
+
+    /* ---------- botones ---------- */
+    button {
+      font-family: inherit;
+      font-size: 16px;
+      color: var(--texto);
+      background: var(--panel);
+      border: 1px solid var(--borde);
+      border-radius: 12px;
+      padding: 12px 16px;
+      min-height: 48px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button:active { transform: scale(.97); }
+    button:disabled { opacity: .45; }
+    button.primario { background: var(--azul); border-color: var(--azul); font-weight: 600; }
+    button.peligro  { color: var(--rojo); }
+    button.icono    { padding: 10px 12px; min-height: 44px; }
+    button.activo   { border-color: var(--verde); color: var(--verde); }
+
+    /* ---------- escáner ---------- */
+    #zonaCamara {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      background: #000;
+      display: flex;
       align-items: center;
       justify-content: center;
-      gap: 16px;
-      padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-      color: #fff;
-      /* FONDO ARCOÍRIS */
-      background: radial-gradient(circle,
-        #000000 0%,
-        #0058ff 35%,
-        #0070ff 55%,
-        #ff4b5c 75%,
-        #ff0000 100%
-      );
-      background-attachment: fixed;
-    }
-
-    .viewer {
-      position: relative;
-      width: 100%;
-      max-width: 500px;            /* en PC se ve igual que antes */
       overflow: hidden;
-      border-radius: 20px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-      background: #000;
-      line-height: 0;
     }
-
-    video {
-      width: 100%;
-      height: auto;                /* el contenedor calca al video */
-      display: block;
-      background: #000;
-    }
-
-    /* cámara frontal en espejo, como cualquier app del celu */
-    video.espejo { transform: scaleX(-1); }
-
-    /* EMOJI FILTRO (solo auto, sin mouse) */
-    #emoji {
+    #video, #overlay {
       position: absolute;
-      top: 0;
-      left: 0;
-      font-size: 150px;
-      line-height: 1;
-      display: none;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+    }
+    #video   { object-fit: contain; }
+    #overlay { pointer-events: none; }
+
+    #estado {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(8px);
+      font-size: 14px;
+      white-space: nowrap;
+      max-width: 92%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #estado.ok    { color: var(--verde); }
+    #estado.error { color: var(--rojo); }
+
+    /* flash al capturar */
+    #destello {
+      position: absolute;
+      inset: 0;
+      background: #fff;
+      opacity: 0;
       pointer-events: none;
-      will-change: transform, font-size;
     }
+    #destello.dispara { animation: flash .35s ease-out; }
+    @keyframes flash { from { opacity: .85; } to { opacity: 0; } }
 
-    .controles {
-      display: flex;
-      flex-wrap: wrap;
+    #controles {
+      flex: 0 0 auto;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
       gap: 12px;
-      justify-content: center;
-      width: 100%;
-      max-width: 500px;
+      padding: 14px;
+      background: var(--panel);
+      border-top: 1px solid var(--borde);
     }
 
-    button {
+    #obturador {
+      width: 74px; height: 74px;
+      border-radius: 50%;
+      border: 4px solid var(--texto);
+      background: transparent;
+      padding: 0;
+      justify-self: center;
+      position: relative;
+    }
+    #obturador::after {
+      content: "";
+      position: absolute;
+      inset: 6px;
+      border-radius: 50%;
+      background: var(--texto);
+    }
+    #obturador:active::after { background: var(--azul); }
+
+    .col { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+    .col.der { align-items: flex-end; }
+    .col button { font-size: 14px; min-height: 42px; padding: 8px 12px; width: 100%; }
+
+    /* ---------- biblioteca ---------- */
+    #grilla {
       flex: 1 1 auto;
-      min-height: 52px;            /* dedo, no mouse */
-      padding: 14px 20px;
-      font-size: 17px;
-      font-family: inherit;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+      padding: 14px;
+      align-content: start;
+    }
+    .tarjeta {
+      position: relative;
+      background: var(--panel);
+      border: 1px solid var(--borde);
+      border-radius: 10px;
+      overflow: hidden;
+      aspect-ratio: 3 / 4;
+    }
+    .tarjeta img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .tarjeta .num {
+      position: absolute;
+      left: 6px; bottom: 6px;
+      background: rgba(0,0,0,.7);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 13px;
+    }
+    .tarjeta .borrar {
+      position: absolute;
+      top: 4px; right: 4px;
+      width: 34px; height: 34px;
+      min-height: 0;
+      padding: 0;
+      border-radius: 50%;
+      background: rgba(0,0,0,.65);
       border: none;
-      background: #0a84ff;
-      color: white;
-      border-radius: 12px;
-      cursor: pointer;
-      touch-action: manipulation;  /* sin zoom al doble toque ni delay */
-      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+      font-size: 15px;
+      line-height: 1;
     }
 
-    button:active { background: #006bd6; transform: scale(0.98); }
-    button:disabled { opacity: .5; }
-
-    @media (hover: hover) {
-      button:hover { background: #006bd6; }
+    #vacio {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: var(--suave);
+      padding: 48px 20px;
+      line-height: 1.5;
     }
 
-    /* pantalla de arranque: el celu pide permiso recién con un toque */
+    #pieBiblioteca {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--panel);
+      border-top: 1px solid var(--borde);
+    }
+    #pieBiblioteca button { flex: 1; }
+
+    /* ---------- lector ---------- */
+    #zonaLectura {
+      flex: 1 1 auto;
+      min-height: 0;
+      position: relative;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #hoja {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    #pieLector {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--panel);
+      border-top: 1px solid var(--borde);
+    }
+    #pieLector button { flex: 0 0 auto; }
+    #posicion { flex: 1; text-align: center; color: var(--suave); font-size: 15px; }
+
+    /* ---------- arranque ---------- */
     #inicio {
       position: fixed;
       inset: 0;
-      z-index: 20;
+      z-index: 50;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 18px;
-      padding: 24px;
+      gap: 20px;
+      padding: 28px;
       text-align: center;
-      background: rgba(0,0,0,.75);
-      backdrop-filter: blur(6px);
+      background: var(--fondo);
     }
-
-    #inicio h1 { margin: 0; font-size: 24px; }
-    #inicio p  { margin: 0; max-width: 320px; font-size: 15px; opacity: .85; line-height: 1.45; }
-    #inicio button { flex: 0 0 auto; min-width: 220px; font-size: 18px; }
-
-    /* la foto lista: en el celu se guarda desde acá */
-    #resultado {
-      position: fixed;
-      inset: 0;
-      z-index: 30;
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
-      background: rgba(0,0,0,.9);
-    }
-
-    #resultado img {
-      max-width: 100%;
-      max-height: 65dvh;
-      border-radius: 14px;
-      -webkit-user-select: auto;
-      user-select: auto;
-      -webkit-touch-callout: default;  /* dejar "mantener presionado > guardar" */
-    }
-
-    #resultado .controles { max-width: 420px; }
-    #ayudaGuardar { font-size: 14px; opacity: .8; margin: 0; text-align: center; }
-
-    #aviso {
-      max-width: 500px;
-      margin: 0;
-      font-size: 14px;
-      text-align: center;
-      opacity: .9;
-    }
+    #inicio h1 { margin: 0; font-size: 26px; }
+    #inicio p  { margin: 0; max-width: 330px; color: var(--suave); line-height: 1.5; }
+    #inicio button { min-width: 230px; }
+    #errorInicio { color: var(--rojo); min-height: 20px; font-size: 14px; }
   </style>
 </head>
 <body>
 
-  <div class="viewer">
-    <video id="cam" autoplay playsinline muted></video>
-    <div id="emoji">😎</div>
+<!-- ==================== ESCÁNER ==================== -->
+<section id="vistaCamara" class="vista activa">
+  <div class="barra">
+    <h1>Escáner</h1>
+    <span class="contador" id="contadorCam">0 páginas</span>
+    <button class="icono" id="irBiblioteca">Biblioteca 📚</button>
   </div>
 
-  <div class="controles">
-    <button id="fotoBtn">Tomar foto 📸</button>
-    <button id="camBtn">Girar cámara 🔄</button>
+  <div id="zonaCamara">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="destello"></div>
+    <div id="estado">Buscá una página…</div>
   </div>
 
-  <p id="aviso"></p>
-
-  <canvas id="canvas" style="display:none;"></canvas>
-
-  <!-- pantalla de arranque -->
-  <div id="inicio">
-    <h1>Filtro con cámara</h1>
-    <p>Tocá el botón y dale permiso a la cámara. El emoji se pega solo a tu cara.</p>
-    <button id="iniciarBtn">Activar cámara 🎥</button>
-  </div>
-
-  <!-- foto lista -->
-  <div id="resultado">
-    <img id="fotoPreview" alt="Foto con el filtro">
-    <p id="ayudaGuardar">Mantené presionada la foto y elegí «Guardar imagen».</p>
-    <div class="controles">
-      <button id="guardarBtn">Guardar 💾</button>
-      <button id="cerrarBtn">Volver ↩️</button>
+  <div id="controles">
+    <div class="col">
+      <button id="btnAuto" class="activo">Auto ✅</button>
+      <button id="btnLuz" hidden>Luz 🔦</button>
+    </div>
+    <button id="obturador" aria-label="Capturar página"></button>
+    <div class="col der">
+      <button id="btnContraste" class="activo">Contraste ✅</button>
+      <button id="btnCamara">Girar 🔄</button>
     </div>
   </div>
+</section>
 
-  <!-- MEDIAPIPE FACE DETECTION -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+<!-- ==================== BIBLIOTECA ==================== -->
+<section id="vistaBiblioteca" class="vista">
+  <div class="barra">
+    <button class="icono" id="volverCam">‹ Escáner</button>
+    <h1>Biblioteca</h1>
+    <span class="contador" id="contadorBib">0</span>
+  </div>
 
-  <script>
-    const video    = document.getElementById("cam");
-    const emoji    = document.getElementById("emoji");
-    const canvas   = document.getElementById("canvas");
-    const fotoBtn  = document.getElementById("fotoBtn");
-    const camBtn   = document.getElementById("camBtn");
-    const aviso    = document.getElementById("aviso");
-    const inicio   = document.getElementById("inicio");
-    const iniciarBtn = document.getElementById("iniciarBtn");
+  <div id="grilla"></div>
 
-    const resultado    = document.getElementById("resultado");
-    const fotoPreview  = document.getElementById("fotoPreview");
-    const guardarBtn   = document.getElementById("guardarBtn");
-    const cerrarBtn    = document.getElementById("cerrarBtn");
-    const ayudaGuardar = document.getElementById("ayudaGuardar");
+  <div id="pieBiblioteca">
+    <button id="btnPdf">Exportar PDF 📄</button>
+    <button id="btnBorrarTodo" class="peligro">Borrar todo</button>
+  </div>
+</section>
 
-    let mpFace   = null;
-    let mpReady  = false;
-    let ocupado  = false;      // que no se encimen los frames en el celu
-    let frame    = 0;
-    let stream   = null;
-    let camara   = "user";     // "user" = frontal, "environment" = trasera
-    let ultimaFoto = null;
+<!-- ==================== LECTOR ==================== -->
+<section id="vistaLector" class="vista">
+  <div class="barra">
+    <button class="icono" id="volverBib">‹ Biblioteca</button>
+    <h1>Lectura</h1>
+  </div>
 
-    // posición suavizada del emoji (en el celu tiembla mucho si no)
-    let pos = null;
+  <div id="zonaLectura">
+    <img id="hoja" alt="Página escaneada">
+  </div>
 
-    // --------- CÁMARA ----------
-    async function startCamera() {
-      pararCamara();
+  <div id="pieLector">
+    <button class="icono" id="btnAnterior">‹</button>
+    <span id="posicion">0 / 0</span>
+    <button class="icono" id="btnCompartir">Compartir</button>
+    <button class="icono peligro" id="btnBorrarHoja">🗑</button>
+    <button class="icono" id="btnSiguiente">›</button>
+  </div>
+</section>
 
+<!-- ==================== ARRANQUE ==================== -->
+<div id="inicio">
+  <h1>Escáner de libros 📖</h1>
+  <p>Apoyá el libro con buena luz y apuntá a la hoja. Cuando la página quede quieta, se captura sola.</p>
+  <button class="primario" id="btnIniciar">Activar cámara 🎥</button>
+  <button id="btnSoloBiblioteca">Ver lo escaneado 📚</button>
+  <div id="errorInicio"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   AJUSTES — si el escaneo dispara de más o de menos, tocá esto
+   ============================================================ */
+const ANCHO_ANALISIS   = 192;   // ancho al que reducimos el cuadro para analizarlo
+const CUADROS_QUIETO   = 11;    // cuadros seguidos quieta antes de capturar (~1,1 s)
+const TOLERANCIA_MOV   = 0.025; // cuánto se puede mover el borde y seguir contando como quieta
+const AREA_MINIMA      = 0.12;  // la hoja tiene que ocupar al menos este % del cuadro
+const AREA_MAXIMA      = 0.97;
+const RELLENO_MINIMO   = 0.62;  // qué tan rectangular tiene que ser lo detectado
+const HUELLA_ANCHO     = 480;   // resolución a la que se compara el contenido de la hoja
+const HUELLA_N         = 24;    // la hoja se resume en una grilla de 24x24
+const DUPLICADO_OBVIO  = 6;     // por debajo de esto es literalmente la misma foto
+const PERDIDAS_REARME  = 4;     // cuadros sin ver la hoja que habilitan otra captura
+const MOV_REARME       = 0.10;  // cuánto tiene que correrse el recuadro para habilitar otra
+const ESPERA_POST      = 900;   // ms de descanso después de capturar
+const MAX_LADO         = 2000;  // la foto guardada no pasa de este lado, en píxeles
+const CALIDAD_JPEG     = 0.82;
+
+/* ============================================================
+   Elementos
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+
+const video    = $("video");
+const overlay  = $("overlay");
+const estadoEl = $("estado");
+const destello = $("destello");
+
+const vistas = {
+  camara:     $("vistaCamara"),
+  biblioteca: $("vistaBiblioteca"),
+  lector:     $("vistaLector")
+};
+
+/* ============================================================
+   Estado
+   ============================================================ */
+let stream        = null;
+let camara        = "environment";   // el libro se escanea con la trasera
+let auto          = true;
+let contraste     = true;
+let analizando    = false;
+let cuadrosQuieto   = 0;
+let cuadrosPerdidos = 0;
+let rearmado        = true;      // ¿se puede capturar de nuevo?
+let cajaCapturada   = null;      // dónde estaba la hoja en la última captura
+let ultimaCaja    = null;
+let huellaPrevia  = null;            // contenido de la última página capturada
+let bloqueadoHasta = 0;
+let paginas       = [];              // {id, blob, url, ancho, alto, fecha}
+let indiceLectura = 0;
+
+const lienzoAnalisis = document.createElement("canvas");
+const ctxAnalisis    = lienzoAnalisis.getContext("2d", { willReadFrequently: true });
+const lienzoCaptura  = document.createElement("canvas");
+const ctxOverlay     = overlay.getContext("2d");
+
+/* ============================================================
+   Base de datos (las páginas quedan guardadas en el teléfono)
+   ============================================================ */
+const BD_NOMBRE = "escanerLibros";
+const BD_STORE  = "paginas";
+let bd = null;
+
+function abrirBD() {
+  return new Promise((resolve, reject) => {
+    const pedido = indexedDB.open(BD_NOMBRE, 1);
+    pedido.onupgradeneeded = () => {
+      const db = pedido.result;
+      if (!db.objectStoreNames.contains(BD_STORE)) {
+        db.createObjectStore(BD_STORE, { keyPath: "id", autoIncrement: true });
+      }
+    };
+    pedido.onsuccess = () => resolve(pedido.result);
+    pedido.onerror   = () => reject(pedido.error);
+  });
+}
+
+function transaccion(modo) {
+  return bd.transaction(BD_STORE, modo).objectStore(BD_STORE);
+}
+
+function pedir(solicitud) {
+  return new Promise((resolve, reject) => {
+    solicitud.onsuccess = () => resolve(solicitud.result);
+    solicitud.onerror   = () => reject(solicitud.error);
+  });
+}
+
+async function guardarEnBD(registro) {
+  const id = await pedir(transaccion("readwrite").add(registro));
+  return id;
+}
+
+async function leerTodoBD() {
+  const filas = await pedir(transaccion("readonly").getAll());
+  return filas.sort((a, b) => a.id - b.id);
+}
+
+async function borrarDeBD(id) {
+  await pedir(transaccion("readwrite").delete(id));
+}
+
+async function vaciarBD() {
+  await pedir(transaccion("readwrite").clear());
+}
+
+/* ============================================================
+   Cámara
+   ============================================================ */
+async function iniciarCamara() {
+  detenerCamara();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: camara },
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    });
+
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    await esperarVideo();
+
+    $("inicio").style.display = "none";
+    prepararLuz();
+    mostrar("camara");
+
+    if (!analizando) {
+      analizando = true;
+      bucleAnalisis();
+    }
+    marcarEstado("Buscá una página…");
+
+  } catch (err) {
+    $("inicio").style.display = "flex";
+    let msg = "No se pudo abrir la cámara: " + err.name;
+    if (!window.isSecureContext) {
+      msg = "La cámara solo funciona con HTTPS (o localhost). Abrí la página con https://";
+    } else if (err.name === "NotAllowedError") {
+      msg = "Diste que no al permiso. Habilitá la cámara para este sitio en los ajustes del navegador.";
+    } else if (err.name === "NotFoundError") {
+      msg = "No se encontró ninguna cámara en el dispositivo.";
+    }
+    $("errorInicio").textContent = msg;
+  }
+}
+
+function esperarVideo() {
+  if (video.videoWidth) return Promise.resolve();
+  return new Promise((resolve) => {
+    video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+  });
+}
+
+function detenerCamara() {
+  if (stream) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+  }
+}
+
+// la linterna ayuda muchísimo con libros; solo existe en algunos teléfonos
+function prepararLuz() {
+  const pista = stream && stream.getVideoTracks()[0];
+  const capacidades = pista && pista.getCapabilities ? pista.getCapabilities() : {};
+  $("btnLuz").hidden = !("torch" in capacidades);
+}
+
+async function alternarLuz() {
+  const pista = stream && stream.getVideoTracks()[0];
+  if (!pista) return;
+  const prendida = $("btnLuz").classList.toggle("activo");
+  try {
+    await pista.applyConstraints({ advanced: [{ torch: prendida }] });
+  } catch (e) {
+    $("btnLuz").classList.remove("activo");
+  }
+}
+
+/* ============================================================
+   Detección de la hoja
+   ------------------------------------------------------------
+   La hoja de un libro es una mancha clara y rectangular sobre un
+   fondo más oscuro. Buscamos el grupo de píxeles claros más grande.
+   ============================================================ */
+
+// separa claro de oscuro buscando el corte que mejor divide el histograma (Otsu)
+function umbralOtsu(histograma, total) {
+  let suma = 0;
+  for (let i = 0; i < 256; i++) suma += i * histograma[i];
+
+  let sumaFondo = 0, pesoFondo = 0, mejorVar = -1, mejorUmbral = 127;
+
+  for (let u = 0; u < 256; u++) {
+    pesoFondo += histograma[u];
+    if (pesoFondo === 0) continue;
+    const pesoFrente = total - pesoFondo;
+    if (pesoFrente === 0) break;
+
+    sumaFondo += u * histograma[u];
+    const mediaFondo  = sumaFondo / pesoFondo;
+    const mediaFrente = (suma - sumaFondo) / pesoFrente;
+    const varianza    = pesoFondo * pesoFrente * (mediaFondo - mediaFrente) ** 2;
+
+    if (varianza > mejorVar) { mejorVar = varianza; mejorUmbral = u; }
+  }
+  return mejorUmbral;
+}
+
+function aGrises(datos, ancho, alto) {
+  const gris = new Uint8ClampedArray(ancho * alto);
+  for (let i = 0, p = 0; i < gris.length; i++, p += 4) {
+    gris[i] = (datos[p] * 299 + datos[p + 1] * 587 + datos[p + 2] * 114) / 1000;
+  }
+  return gris;
+}
+
+// grupo de píxeles claros más grande, con su recuadro
+function detectarPagina(gris, ancho, alto) {
+  const total = ancho * alto;
+  const histograma = new Uint32Array(256);
+  for (let i = 0; i < total; i++) histograma[gris[i]]++;
+
+  const umbral = umbralOtsu(histograma, total);
+  const claro  = new Uint8Array(total);
+  for (let i = 0; i < total; i++) claro[i] = gris[i] > umbral ? 1 : 0;
+
+  const visitado = new Uint8Array(total);
+  const pila = new Int32Array(total);
+  let mejor = null;
+
+  for (let inicio = 0; inicio < total; inicio++) {
+    if (!claro[inicio] || visitado[inicio]) continue;
+
+    let tope = 0;
+    pila[tope++] = inicio;
+    visitado[inicio] = 1;
+
+    let cantidad = 0;
+    let x0 = ancho, y0 = alto, x1 = -1, y1 = -1;
+
+    while (tope > 0) {
+      const p = pila[--tope];
+      const x = p % ancho;
+      const y = (p - x) / ancho;
+
+      cantidad++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+
+      if (x > 0        && claro[p - 1]     && !visitado[p - 1])     { visitado[p - 1]     = 1; pila[tope++] = p - 1; }
+      if (x < ancho -1 && claro[p + 1]     && !visitado[p + 1])     { visitado[p + 1]     = 1; pila[tope++] = p + 1; }
+      if (y > 0        && claro[p - ancho] && !visitado[p - ancho]) { visitado[p - ancho] = 1; pila[tope++] = p - ancho; }
+      if (y < alto - 1 && claro[p + ancho] && !visitado[p + ancho]) { visitado[p + ancho] = 1; pila[tope++] = p + ancho; }
+    }
+
+    if (!mejor || cantidad > mejor.cantidad) {
+      mejor = { cantidad, x0, y0, x1, y1 };
+    }
+  }
+
+  if (!mejor) return null;
+
+  const anchoCaja = mejor.x1 - mejor.x0 + 1;
+  const altoCaja  = mejor.y1 - mejor.y0 + 1;
+  const area      = (anchoCaja * altoCaja) / total;
+  const relleno   = mejor.cantidad / (anchoCaja * altoCaja);
+
+  if (area < AREA_MINIMA || area > AREA_MAXIMA) return null;
+  if (relleno < RELLENO_MINIMO) return null;
+
+  // en proporción (0 a 1), así no depende del tamaño del análisis
+  return {
+    x: mejor.x0 / ancho,
+    y: mejor.y0 / alto,
+    w: anchoCaja / ancho,
+    h: altoCaja / alto,
+    relleno
+  };
+}
+
+/* Resumen del contenido de la hoja, para saber si diste vuelta la página.
+   Va aparte del cuadro de análisis y a más resolución a propósito: en la
+   miniatura de 192 px el texto se hace puré y dos páginas distintas del mismo
+   libro dan lo mismo. Medido con páginas de prueba, a 480 px de ancho y grilla
+   de 24x24 la misma página queda por debajo de 20 y otra página arranca en 28. */
+const lienzoHuella = document.createElement("canvas");
+const ctxHuella    = lienzoHuella.getContext("2d", { willReadFrequently: true });
+
+function huellaDe(fuente, anchoFuente, altoFuente, caja) {
+  const N = HUELLA_N;
+  const ancho = HUELLA_ANCHO;
+  const alto  = Math.max(N, Math.round(ancho * (caja.h * altoFuente) / (caja.w * anchoFuente)));
+
+  lienzoHuella.width  = ancho;
+  lienzoHuella.height = alto;
+  ctxHuella.drawImage(
+    fuente,
+    caja.x * anchoFuente, caja.y * altoFuente, caja.w * anchoFuente, caja.h * altoFuente,
+    0, 0, ancho, alto
+  );
+
+  const gris = aGrises(ctxHuella.getImageData(0, 0, ancho, alto).data, ancho, alto);
+  const salida = new Float32Array(N * N);
+
+  // promedio de cada bloque: mide cuánta tinta hay en esa zona de la hoja.
+  // Muestrear un solo píxel es demasiado ruidoso con texto.
+  for (let j = 0; j < N; j++) {
+    const y0 = Math.floor(j * alto / N);
+    const y1 = Math.max(y0 + 1, Math.floor((j + 1) * alto / N));
+
+    for (let i = 0; i < N; i++) {
+      const x0 = Math.floor(i * ancho / N);
+      const x1 = Math.max(x0 + 1, Math.floor((i + 1) * ancho / N));
+
+      let suma = 0, cuenta = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) { suma += gris[y * ancho + x]; cuenta++; }
+      }
+      salida[j * N + i] = cuenta ? suma / cuenta : 0;
+    }
+  }
+
+  // normalizamos para que un cambio de luz no parezca un cambio de página
+  let media = 0;
+  for (const v of salida) media += v;
+  media /= salida.length;
+
+  let desvio = 0;
+  for (const v of salida) desvio += (v - media) ** 2;
+  desvio = Math.max(12, Math.sqrt(desvio / salida.length));
+
+  for (let i = 0; i < salida.length; i++) {
+    salida[i] = 128 + (salida[i] - media) * (50 / desvio);
+  }
+  return salida;
+}
+
+function diferencia(a, b) {
+  if (!a || !b) return Infinity;
+  let suma = 0;
+  for (let i = 0; i < a.length; i++) suma += Math.abs(a[i] - b[i]);
+  return suma / a.length;
+}
+
+function seMovio(a, b) {
+  if (!a || !b) return true;
+  return Math.abs(a.x - b.x) > TOLERANCIA_MOV ||
+         Math.abs(a.y - b.y) > TOLERANCIA_MOV ||
+         Math.abs(a.w - b.w) > TOLERANCIA_MOV ||
+         Math.abs(a.h - b.h) > TOLERANCIA_MOV;
+}
+
+/* ============================================================
+   Bucle principal
+   ============================================================ */
+function bucleAnalisis() {
+  const paso = () => {
+    try {
+      analizarCuadro();
+    } catch (e) {
+      console.error(e);
+    }
+    // ~10 análisis por segundo: alcanza de sobra y no recalienta el teléfono
+    setTimeout(() => requestAnimationFrame(paso), 100);
+  };
+  paso();
+}
+
+function analizarCuadro() {
+  if (!vistas.camara.classList.contains("activa")) return;
+  if (!stream || video.readyState < 2 || !video.videoWidth) return;
+
+  const ancho = ANCHO_ANALISIS;
+  const alto  = Math.max(1, Math.round(ancho * video.videoHeight / video.videoWidth));
+
+  lienzoAnalisis.width  = ancho;
+  lienzoAnalisis.height = alto;
+  ctxAnalisis.drawImage(video, 0, 0, ancho, alto);
+
+  const datos = ctxAnalisis.getImageData(0, 0, ancho, alto).data;
+  const gris  = aGrises(datos, ancho, alto);
+  const caja  = detectarPagina(gris, ancho, alto);
+
+  dibujarOverlay(caja);
+
+  if (!caja) {
+    cuadrosQuieto = 0;
+    ultimaCaja = null;
+    // al pasar la hoja, la mano tapa la página: eso habilita la próxima captura
+    if (++cuadrosPerdidos >= PERDIDAS_REARME) rearmado = true;
+    marcarEstado("Buscá una página…");
+    return;
+  }
+
+  cuadrosPerdidos = 0;
+  cuadrosQuieto = seMovio(caja, ultimaCaja) ? 0 : cuadrosQuieto + 1;
+  ultimaCaja = caja;
+
+  // moviste el libro o la cámara: es otra toma
+  if (!rearmado && cajaCapturada && (
+        Math.abs(caja.x - cajaCapturada.x) > MOV_REARME ||
+        Math.abs(caja.y - cajaCapturada.y) > MOV_REARME ||
+        Math.abs(caja.w - cajaCapturada.w) > MOV_REARME ||
+        Math.abs(caja.h - cajaCapturada.h) > MOV_REARME)) {
+    rearmado = true;
+  }
+
+  if (!auto) {
+    marcarEstado("Página lista — tocá el botón");
+    return;
+  }
+
+  if (Date.now() < bloqueadoHasta) {
+    marcarEstado("Guardada ✓", "ok");
+    return;
+  }
+
+  if (cuadrosQuieto < CUADROS_QUIETO) {
+    const faltan = ((CUADROS_QUIETO - cuadrosQuieto) / 10).toFixed(1);
+    marcarEstado(`Mantené quieto… ${faltan}s`);
+    return;
+  }
+
+  /* Para habilitar la próxima captura hace falta que la vista se altere:
+     perder la hoja de vista o que el recuadro se corra. Pasar una hoja hace
+     siempre una de las dos (la mano cruza el cuadro), y en cambio el pulso
+     tembloroso no hace ninguna, así que no se llena de repetidas.
+
+     Comparar el contenido de la hoja NO sirve para esto: está medido que la
+     misma página con pulso tembloroso cambia tanto como una página distinta.
+     La huella queda solo para frenar duplicados evidentes. */
+  if (!rearmado) {
+    marcarEstado("Pasá a la página siguiente");
+    return;
+  }
+
+  const huella = huellaDe(video, video.videoWidth, video.videoHeight, caja);
+  if (diferencia(huella, huellaPrevia) < DUPLICADO_OBVIO) {
+    marcarEstado("Es la misma página");
+    return;
+  }
+
+  huellaPrevia = huella;
+  capturar(caja);
+}
+
+function dibujarOverlay(caja) {
+  const rect = video.getBoundingClientRect();
+  if (overlay.width !== rect.width || overlay.height !== rect.height) {
+    overlay.width  = rect.width;
+    overlay.height = rect.height;
+  }
+
+  ctxOverlay.clearRect(0, 0, overlay.width, overlay.height);
+  if (!caja) return;
+
+  // el video usa object-fit: contain, así que calculamos dónde cae de verdad
+  const escala = Math.min(overlay.width / video.videoWidth, overlay.height / video.videoHeight);
+  const vw = video.videoWidth * escala;
+  const vh = video.videoHeight * escala;
+  const vx = (overlay.width - vw) / 2;
+  const vy = (overlay.height - vh) / 2;
+
+  const listo = cuadrosQuieto >= CUADROS_QUIETO;
+  ctxOverlay.strokeStyle = listo ? "#30d158" : "rgba(255,255,255,.85)";
+  ctxOverlay.lineWidth = listo ? 4 : 2;
+  ctxOverlay.setLineDash(listo ? [] : [10, 8]);
+  ctxOverlay.strokeRect(vx + caja.x * vw, vy + caja.y * vh, caja.w * vw, caja.h * vh);
+}
+
+function marcarEstado(texto, clase = "") {
+  if (estadoEl.textContent !== texto) estadoEl.textContent = texto;
+  estadoEl.className = clase;
+}
+
+/* ============================================================
+   Captura
+   ============================================================ */
+async function capturar(caja) {
+  if (!video.videoWidth) return;
+
+  // sin recuadro (botón manual sin detección) sacamos el cuadro entero
+  const zona = caja || { x: 0, y: 0, w: 1, h: 1 };
+
+  // un poco de margen para no comerle el borde a la hoja
+  const margen = 0.012;
+  const x = Math.max(0, zona.x - margen) * video.videoWidth;
+  const y = Math.max(0, zona.y - margen) * video.videoHeight;
+  const w = Math.min(1 - zona.x + margen, zona.w + margen * 2) * video.videoWidth;
+  const h = Math.min(1 - zona.y + margen, zona.h + margen * 2) * video.videoHeight;
+
+  const escala = Math.min(1, MAX_LADO / Math.max(w, h));
+  const destinoW = Math.max(1, Math.round(w * escala));
+  const destinoH = Math.max(1, Math.round(h * escala));
+
+  lienzoCaptura.width  = destinoW;
+  lienzoCaptura.height = destinoH;
+  const ctx = lienzoCaptura.getContext("2d");
+  ctx.drawImage(video, x, y, w, h, 0, 0, destinoW, destinoH);
+
+  if (contraste) realzar(ctx, destinoW, destinoH);
+
+  const blob = await new Promise((r) => lienzoCaptura.toBlob(r, "image/jpeg", CALIDAD_JPEG));
+  if (!blob) return;
+
+  try {
+    const registro = { blob, ancho: destinoW, alto: destinoH, fecha: Date.now() };
+    registro.id = await guardarEnBD(registro);
+    registro.url = URL.createObjectURL(blob);
+    paginas.push(registro);
+  } catch (e) {
+    marcarEstado("No se pudo guardar (¿sin espacio?)", "error");
+    return;
+  }
+
+  bloqueadoHasta = Date.now() + ESPERA_POST;
+  cuadrosQuieto = 0;
+  rearmado = false;
+  cajaCapturada = caja;
+  actualizarContadores();
+
+  destello.classList.remove("dispara");
+  void destello.offsetWidth;          // reinicia la animación
+  destello.classList.add("dispara");
+  marcarEstado(`Página ${paginas.length} guardada ✓`, "ok");
+}
+
+// estira el contraste para que la letra salga negra y el papel blanco
+function realzar(ctx, ancho, alto) {
+  const imagen = ctx.getImageData(0, 0, ancho, alto);
+  const d = imagen.data;
+
+  const histograma = new Uint32Array(256);
+  for (let i = 0; i < d.length; i += 4) {
+    histograma[(d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0]++;
+  }
+
+  const total = ancho * alto;
+  const recorte = total * 0.02;       // ignoramos el 2% más oscuro y más claro
+  let acumulado = 0, minimo = 0, maximo = 255;
+
+  for (let i = 0; i < 256; i++) { acumulado += histograma[i]; if (acumulado > recorte) { minimo = i; break; } }
+  acumulado = 0;
+  for (let i = 255; i >= 0; i--) { acumulado += histograma[i]; if (acumulado > recorte) { maximo = i; break; } }
+  if (maximo - minimo < 20) return;   // imagen plana: mejor no tocarla
+
+  const tabla = new Uint8ClampedArray(256);
+  for (let i = 0; i < 256; i++) tabla[i] = ((i - minimo) * 255) / (maximo - minimo);
+  for (let i = 0; i < d.length; i += 4) {
+    d[i]     = tabla[d[i]];
+    d[i + 1] = tabla[d[i + 1]];
+    d[i + 2] = tabla[d[i + 2]];
+  }
+  ctx.putImageData(imagen, 0, 0);
+}
+
+/* ============================================================
+   Biblioteca
+   ============================================================ */
+function actualizarContadores() {
+  const n = paginas.length;
+  $("contadorCam").textContent = n === 1 ? "1 página" : `${n} páginas`;
+  $("contadorBib").textContent = String(n);
+  $("btnPdf").disabled = n === 0;
+  $("btnBorrarTodo").disabled = n === 0;
+}
+
+function pintarBiblioteca() {
+  const grilla = $("grilla");
+  grilla.textContent = "";
+
+  if (paginas.length === 0) {
+    const vacio = document.createElement("div");
+    vacio.id = "vacio";
+    vacio.textContent = "Todavía no escaneaste ninguna página. Volvé al escáner y apuntá a un libro.";
+    grilla.appendChild(vacio);
+    return;
+  }
+
+  paginas.forEach((pagina, indice) => {
+    if (!pagina.url) pagina.url = URL.createObjectURL(pagina.blob);
+
+    const tarjeta = document.createElement("div");
+    tarjeta.className = "tarjeta";
+
+    const img = document.createElement("img");
+    img.src = pagina.url;
+    img.alt = `Página ${indice + 1}`;
+    img.addEventListener("click", () => abrirLector(indice));
+
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = indice + 1;
+
+    const borrar = document.createElement("button");
+    borrar.className = "borrar";
+    borrar.textContent = "✕";
+    borrar.setAttribute("aria-label", `Borrar página ${indice + 1}`);
+    borrar.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      borrarPagina(indice);
+    });
+
+    tarjeta.append(img, num, borrar);
+    grilla.appendChild(tarjeta);
+  });
+}
+
+async function borrarPagina(indice) {
+  const pagina = paginas[indice];
+  if (!pagina) return;
+  if (!confirm(`¿Borrar la página ${indice + 1}?`)) return;
+
+  await borrarDeBD(pagina.id);
+  if (pagina.url) URL.revokeObjectURL(pagina.url);
+  paginas.splice(indice, 1);
+
+  actualizarContadores();
+  pintarBiblioteca();
+
+  if (vistas.lector.classList.contains("activa")) {
+    if (paginas.length === 0) mostrar("biblioteca");
+    else { indiceLectura = Math.min(indiceLectura, paginas.length - 1); pintarLector(); }
+  }
+}
+
+/* ============================================================
+   Lector
+   ============================================================ */
+function abrirLector(indice) {
+  indiceLectura = indice;
+  mostrar("lector");
+  pintarLector();
+}
+
+function pintarLector() {
+  const pagina = paginas[indiceLectura];
+  if (!pagina) return;
+  if (!pagina.url) pagina.url = URL.createObjectURL(pagina.blob);
+
+  $("hoja").src = pagina.url;
+  $("posicion").textContent = `${indiceLectura + 1} / ${paginas.length}`;
+  $("btnAnterior").disabled  = indiceLectura === 0;
+  $("btnSiguiente").disabled = indiceLectura >= paginas.length - 1;
+}
+
+function pasarPagina(paso) {
+  const nuevo = indiceLectura + paso;
+  if (nuevo < 0 || nuevo >= paginas.length) return;
+  indiceLectura = nuevo;
+  pintarLector();
+}
+
+// deslizar con el dedo, como cualquier lector
+let tocoEnX = null;
+$("zonaLectura").addEventListener("touchstart", (ev) => {
+  tocoEnX = ev.touches[0].clientX;
+}, { passive: true });
+
+$("zonaLectura").addEventListener("touchend", (ev) => {
+  if (tocoEnX === null) return;
+  const delta = ev.changedTouches[0].clientX - tocoEnX;
+  if (Math.abs(delta) > 45) pasarPagina(delta < 0 ? 1 : -1);
+  tocoEnX = null;
+}, { passive: true });
+
+async function compartirPagina() {
+  const pagina = paginas[indiceLectura];
+  if (!pagina) return;
+
+  const archivo = new File([pagina.blob], `pagina-${indiceLectura + 1}.jpg`, { type: "image/jpeg" });
+  if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+    try {
+      await navigator.share({ files: [archivo], title: `Página ${indiceLectura + 1}` });
+      return;
+    } catch (e) {
+      if (e.name === "AbortError") return;
+    }
+  }
+  descargar(pagina.url, `pagina-${indiceLectura + 1}.jpg`);
+}
+
+function descargar(url, nombre) {
+  const enlace = document.createElement("a");
+  enlace.href = url;
+  enlace.download = nombre;
+  enlace.click();
+}
+
+/* ============================================================
+   Exportar a PDF — armado a mano, sin librerías.
+   Cada página del PDF lleva el JPEG tal cual (/DCTDecode).
+   ============================================================ */
+async function exportarPDF() {
+  if (paginas.length === 0) return;
+
+  const btn = $("btnPdf");
+  const textoPrevio = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Armando…";
+
+  try {
+    const partes = [];          // trozos del archivo (texto o bytes)
+    const posiciones = [];      // dónde empieza cada objeto, en bytes
+    let largo = 0;
+
+    const texto = (s) => {
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+      partes.push(bytes);
+      largo += bytes.length;
+    };
+    const crudo = (bytes) => { partes.push(bytes); largo += bytes.length; };
+    const objeto = (numero) => { posiciones[numero] = largo; };
+
+    // 1 = catálogo, 2 = árbol de páginas, después 3 objetos por página
+    const cantidad = paginas.length;
+    const idsPagina = [];
+
+    texto("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+
+    objeto(1);
+    texto("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    let siguiente = 3;
+    const bloques = [];
+
+    for (const pagina of paginas) {
+      const bytes = new Uint8Array(await pagina.blob.arrayBuffer());
+      const idPagina    = siguiente++;
+      const idContenido = siguiente++;
+      const idImagen    = siguiente++;
+      idsPagina.push(idPagina);
+      bloques.push({ bytes, pagina, idPagina, idContenido, idImagen });
+    }
+
+    objeto(2);
+    texto(`2 0 obj\n<< /Type /Pages /Count ${cantidad} /Kids [${idsPagina.map((n) => `${n} 0 R`).join(" ")}] >>\nendobj\n`);
+
+    for (const b of bloques) {
+      const ancho = b.pagina.ancho;
+      const alto  = b.pagina.alto;
+
+      objeto(b.idPagina);
+      texto(`${b.idPagina} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${ancho} ${alto}] ` +
+            `/Resources << /XObject << /Im0 ${b.idImagen} 0 R >> >> /Contents ${b.idContenido} 0 R >>\nendobj\n`);
+
+      const flujo = `q ${ancho} 0 0 ${alto} 0 0 cm /Im0 Do Q\n`;
+      objeto(b.idContenido);
+      texto(`${b.idContenido} 0 obj\n<< /Length ${flujo.length} >>\nstream\n${flujo}endstream\nendobj\n`);
+
+      objeto(b.idImagen);
+      texto(`${b.idImagen} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${ancho} /Height ${alto} ` +
+            `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${b.bytes.length} >>\nstream\n`);
+      crudo(b.bytes);
+      texto("\nendstream\nendobj\n");
+    }
+
+    const totalObjetos = siguiente;             // objetos 1..siguiente-1
+    const inicioXref = largo;
+
+    let xref = `xref\n0 ${totalObjetos}\n0000000000 65535 f \n`;
+    for (let i = 1; i < totalObjetos; i++) {
+      xref += String(posiciones[i]).padStart(10, "0") + " 00000 n \n";
+    }
+    texto(xref);
+    texto(`trailer\n<< /Size ${totalObjetos} /Root 1 0 R >>\nstartxref\n${inicioXref}\n%%EOF\n`);
+
+    const pdf = new Blob(partes, { type: "application/pdf" });
+    const nombre = `libro-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const archivo = new File([pdf], nombre, { type: "application/pdf" });
+
+    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: camara,
-            width:  { ideal: 1280 },
-            height: { ideal: 720 }
-          },
-          audio: false
-        });
-
-        video.srcObject = stream;
-        video.classList.toggle("espejo", camara === "user");
-        await video.play().catch(() => {});
-
-        emoji.style.display = "block";
-        centrarEmoji();          // mientras no detecte cara, que no quede en la esquina
-        aviso.textContent = "";
-        inicio.style.display = "none";
-
-        initMediaPipe();  // iniciamos detección cuando ya hay video
-
-      } catch (err) {
-        inicio.style.display = "flex";
-        aviso.textContent = "No se pudo abrir la cámara: " + err.name;
-
-        if (!window.isSecureContext) {
-          aviso.textContent = "La cámara solo funciona con HTTPS (o localhost). Abrí la página con https://";
-        } else if (err.name === "NotAllowedError") {
-          aviso.textContent = "Diste que no al permiso. Habilitá la cámara para este sitio en los ajustes del navegador.";
-        }
-      }
-    }
-
-    function centrarEmoji() {
-      const r = video.parentElement.getBoundingClientRect();
-      if (!r.width) return;
-      pos = { x: r.width / 2, y: r.height * 0.15, t: Math.max(60, r.width * 0.35) };
-      emoji.style.fontSize = pos.t + "px";
-      emoji.style.transform = `translate(${pos.x - emoji.offsetWidth / 2}px, ${pos.y}px)`;
-    }
-
-    function pararCamara() {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-      }
-    }
-
-    // --------- MEDIAPIPE (SEGUIMIENTO CARA) ----------
-    function initMediaPipe() {
-      if (mpReady) return;
-
-      if (!window.FaceDetection) {
-        aviso.textContent = "No cargó el detector de caras. Revisá la conexión.";
+        await navigator.share({ files: [archivo], title: nombre });
         return;
+      } catch (e) {
+        if (e.name === "AbortError") return;
       }
-
-      mpFace = new FaceDetection.FaceDetection({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-      });
-
-      mpFace.setOptions({
-        model: 'short',
-        minDetectionConfidence: 0.5
-      });
-
-      mpFace.onResults(onResultsMP);
-      mpReady = true;
-      loopMediaPipe();
     }
 
-    function loopMediaPipe() {
-      const loop = async () => {
-        frame++;
-        // en el celu procesamos 1 de cada 2 frames: menos calor y menos batería
-        if (mpReady && !ocupado && frame % 2 === 0 && video.readyState >= 2) {
-          ocupado = true;
-          try {
-            await mpFace.send({ image: video });
-          } catch (e) {
-            console.error(e);
-          }
-          ocupado = false;
-        }
-        requestAnimationFrame(loop);
-      };
-      loop();
-    }
+    const url = URL.createObjectURL(pdf);
+    descargar(url, nombre);
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
 
-    // colocar emoji según la detección (solo automático)
-    function onResultsMP(results) {
-      if (!results.detections || results.detections.length === 0) return;
+  } finally {
+    btn.textContent = textoPrevio;
+    btn.disabled = paginas.length === 0;
+  }
+}
 
-      const det = results.detections[0];
-      const box = det.locationData.relativeBoundingBox;
+/* ============================================================
+   Navegación entre vistas
+   ============================================================ */
+function mostrar(nombre) {
+  for (const [clave, seccion] of Object.entries(vistas)) {
+    seccion.classList.toggle("activa", clave === nombre);
+  }
+  if (nombre === "biblioteca") pintarBiblioteca();
+}
 
-      // usamos el tamaño del CONTENEDOR (.viewer)
-      const viewerRect = video.parentElement.getBoundingClientRect();
-      const viewerW = viewerRect.width;
-      const viewerH = viewerRect.height;
+/* ============================================================
+   Cableado
+   ============================================================ */
+$("btnIniciar").addEventListener("click", iniciarCamara);
 
-      // MediaPipe ve el video sin espejar; la pantalla sí está espejada
-      let cx = (box.xmin + box.width / 2);
-      if (camara === "user") cx = 1 - cx;
+$("btnSoloBiblioteca").addEventListener("click", () => {
+  $("inicio").style.display = "none";
+  mostrar("biblioteca");
+});
 
-      const destino = {
-        x: cx * viewerW,
-        y: (box.ymin - 0.4 * box.height) * viewerH,   // un poco arriba de la cara
-        t: Math.max(40, box.width * viewerW * 1.4)    // el emoji crece con la cara
-      };
+$("irBiblioteca").addEventListener("click", () => mostrar("biblioteca"));
+$("volverCam").addEventListener("click", () => mostrar("camara"));
+$("volverBib").addEventListener("click", () => mostrar("biblioteca"));
 
-      // suavizado, si no tiembla
-      if (!pos) {
-        pos = destino;
-      } else {
-        pos.x += (destino.x - pos.x) * 0.35;
-        pos.y += (destino.y - pos.y) * 0.35;
-        pos.t += (destino.t - pos.t) * 0.20;
-      }
+$("obturador").addEventListener("click", () => {
+  if (!stream) return;
+  huellaPrevia = null;         // capturar a mano siempre vale
+  rearmado = true;
+  capturar(ultimaCaja);
+});
 
-      emoji.style.fontSize = pos.t + "px";
-      emoji.style.transform = `translate(${pos.x - emoji.offsetWidth / 2}px, ${pos.y}px)`;
-    }
+$("btnAuto").addEventListener("click", () => {
+  auto = !auto;
+  $("btnAuto").textContent = auto ? "Auto ✅" : "Auto ⛔";
+  $("btnAuto").classList.toggle("activo", auto);
+  cuadrosQuieto = 0;
+});
 
-    // --------- TOMAR FOTO ----------
-    fotoBtn.addEventListener("click", () => {
-      if (!video.videoWidth || !video.videoHeight) {
-        aviso.textContent = "Esperá a que cargue la cámara 😉";
-        return;
-      }
+$("btnContraste").addEventListener("click", () => {
+  contraste = !contraste;
+  $("btnContraste").textContent = contraste ? "Contraste ✅" : "Contraste ⛔";
+  $("btnContraste").classList.toggle("activo", contraste);
+});
 
-      const ctx = canvas.getContext("2d");
-      canvas.width  = video.videoWidth;
-      canvas.height = video.videoHeight;
+$("btnCamara").addEventListener("click", async () => {
+  $("btnCamara").disabled = true;
+  camara = camara === "environment" ? "user" : "environment";
+  ultimaCaja = null;
+  cuadrosQuieto = 0;
+  await iniciarCamara();
+  $("btnCamara").disabled = false;
+});
 
-      // la foto sale igual que lo que ves: si el preview está espejado, la foto también
-      ctx.save();
-      if (camara === "user") {
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-      }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      ctx.restore();   // el emoji NO va espejado
+$("btnLuz").addEventListener("click", alternarLuz);
 
-      const viewerRect = video.parentElement.getBoundingClientRect();
-      const emojiRect  = emoji.getBoundingClientRect();
+$("btnAnterior").addEventListener("click", () => pasarPagina(-1));
+$("btnSiguiente").addEventListener("click", () => pasarPagina(1));
+$("btnCompartir").addEventListener("click", compartirPagina);
+$("btnBorrarHoja").addEventListener("click", () => borrarPagina(indiceLectura));
 
-      // posición del emoji relativa al contenedor, pasada a píxeles del canvas
-      const escalaX = canvas.width  / viewerRect.width;
-      const escalaY = canvas.height / viewerRect.height;
+$("btnPdf").addEventListener("click", exportarPDF);
 
-      const emojiCanvasX = (emojiRect.left - viewerRect.left) * escalaX;
-      const emojiCanvasY = (emojiRect.top  - viewerRect.top)  * escalaY;
+$("btnBorrarTodo").addEventListener("click", async () => {
+  if (paginas.length === 0) return;
+  if (!confirm(`¿Borrar las ${paginas.length} páginas escaneadas? No se puede deshacer.`)) return;
 
-      const fontSizePx = parseFloat(window.getComputedStyle(emoji).fontSize);
-      ctx.font = (fontSizePx * escalaX) + "px Arial";
-      ctx.textBaseline = "top";
-      ctx.fillText(emoji.textContent, emojiCanvasX, emojiCanvasY);
+  await vaciarBD();
+  paginas.forEach((p) => p.url && URL.revokeObjectURL(p.url));
+  paginas = [];
+  huellaPrevia = null;
+  rearmado = true;
 
-      canvas.toBlob(mostrarFoto, "image/png");
-    });
+  actualizarContadores();
+  pintarBiblioteca();
+});
 
-    // en el celu no sirve el <a download>: mostramos la foto y la compartimos/guardamos
-    function mostrarFoto(blob) {
-      if (!blob) return;
-      if (ultimaFoto) URL.revokeObjectURL(ultimaFoto.url);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && stream) video.play().catch(() => {});
+});
+window.addEventListener("pagehide", detenerCamara);
 
-      ultimaFoto = { blob, url: URL.createObjectURL(blob) };
-      fotoPreview.src = ultimaFoto.url;
-      resultado.style.display = "flex";
+/* ============================================================
+   Arranque
+   ============================================================ */
+(async function arrancar() {
+  try {
+    bd = await abrirBD();
+    paginas = await leerTodoBD();
+  } catch (e) {
+    $("errorInicio").textContent = "No se pudo abrir el archivo de páginas guardadas.";
+  }
+  actualizarContadores();
 
-      const archivo = new File([blob], "foto_filtro.png", { type: "image/png" });
-      const sePuedeCompartir = navigator.canShare && navigator.canShare({ files: [archivo] });
-      ayudaGuardar.textContent = sePuedeCompartir
-        ? "«Guardar» abre el menú del celu para mandarla o guardarla en la galería."
-        : "Si «Guardar» no hace nada, mantené presionada la foto y elegí «Guardar imagen».";
-    }
+  if (paginas.length > 0) {
+    $("btnSoloBiblioteca").textContent = `Ver lo escaneado 📚 (${paginas.length})`;
+  }
+})();
 
-    guardarBtn.addEventListener("click", async () => {
-      if (!ultimaFoto) return;
-
-      const archivo = new File([ultimaFoto.blob], "foto_filtro.png", { type: "image/png" });
-
-      // celular: menú nativo de compartir/guardar
-      if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
-        try {
-          await navigator.share({ files: [archivo], title: "Foto con filtro" });
-          return;
-        } catch (e) {
-          if (e.name === "AbortError") return;   // el usuario canceló
-        }
-      }
-
-      // PC (y celus viejos): descarga de toda la vida
-      const link = document.createElement("a");
-      link.download = "foto_filtro.png";
-      link.href = ultimaFoto.url;
-      link.click();
-    });
-
-    cerrarBtn.addEventListener("click", () => {
-      resultado.style.display = "none";
-    });
-
-    // --------- CAMBIAR DE CÁMARA (frontal / trasera) ----------
-    camBtn.addEventListener("click", async () => {
-      camBtn.disabled = true;
-      camara = (camara === "user") ? "environment" : "user";
-      pos = null;
-      await startCamera();
-      camBtn.disabled = false;
-    });
-
-    // --------- ARRANQUE ----------
-    // el permiso de cámara en el celu tiene que salir de un toque
-    iniciarBtn.addEventListener("click", startCamera);
-
-    // si volvés a la app después de mandarla al fondo, la cámara se reengancha
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && stream) video.play().catch(() => {});
-    });
-
-    window.addEventListener("pagehide", pararCamara);
-  </script>
+// para las pruebas automatizadas
+window.__escaner = {
+  detectarPagina, huellaDe, diferencia, aGrises,
+  get paginas()       { return paginas; },
+  get huellaPrevia()  { return huellaPrevia; },
+  get rearmado()      { return rearmado; },
+  get cuadrosQuieto() { return cuadrosQuieto; },
+  get ultimaCaja()    { return ultimaCaja; }
+};
+</script>
 </body>
 </html>
