@@ -231,6 +231,7 @@
       align-items: center;
       justify-content: center;
       overflow: hidden;
+      touch-action: none;          /* el zoom lo manejamos nosotros */
     }
     #hoja {
       max-width: 100%;
@@ -238,6 +239,8 @@
       object-fit: contain;
       user-select: none;
       -webkit-user-drag: none;
+      transform-origin: 0 0;
+      will-change: transform;
     }
     #pieLector {
       flex: 0 0 auto;
@@ -250,6 +253,38 @@
     }
     #pieLector button { flex: 0 0 auto; }
     #posicion { flex: 1; text-align: center; color: var(--suave); font-size: 15px; }
+
+    /* modo inmersivo: la hoja sola, sin barras (se sale tocando el centro) */
+    #vistaLector.inmersivo .barra,
+    #vistaLector.inmersivo #pieLector { display: none; }
+
+    /* aviso flotante del lector (zoom, auto, fin del libro) */
+    #avisoLector {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.7);
+      backdrop-filter: blur(8px);
+      font-size: 14px;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity .25s;
+      pointer-events: none;
+    }
+    #avisoLector.visible { opacity: 1; }
+
+    /* barra de avance de la lectura automática */
+    #avanceAuto {
+      position: absolute;
+      left: 0; top: 0;
+      height: 3px;
+      width: 0;
+      background: var(--verde);
+      pointer-events: none;
+    }
 
     /* ---------- arranque ---------- */
     #inicio {
@@ -291,6 +326,7 @@
   <div id="controles">
     <div class="col">
       <button id="btnAuto" class="activo">Auto ✅</button>
+      <button id="btnDoble">Doble 📖</button>
       <button id="btnLuz" hidden>Luz 🔦</button>
     </div>
     <button id="obturador" aria-label="Capturar página"></button>
@@ -326,12 +362,15 @@
 
   <div id="zonaLectura">
     <img id="hoja" alt="Página escaneada">
+    <div id="avanceAuto"></div>
+    <div id="avisoLector"></div>
   </div>
 
   <div id="pieLector">
     <button class="icono" id="btnAnterior">‹</button>
     <span id="posicion">0 / 0</span>
-    <button class="icono" id="btnCompartir">Compartir</button>
+    <button class="icono" id="btnLeerSolo">Auto ▶</button>
+    <button class="icono" id="btnCompartir" aria-label="Compartir esta hoja">↗</button>
     <button class="icono peligro" id="btnBorrarHoja">🗑</button>
     <button class="icono" id="btnSiguiente">›</button>
   </div>
@@ -342,6 +381,7 @@
   <h1>Escáner de libros 📖</h1>
   <p>Apoyá el libro con buena luz y apuntá a la hoja. Cuando la página quede quieta, se captura sola.</p>
   <button class="primario" id="btnIniciar">Activar cámara 🎥</button>
+  <button id="btnSeguir" hidden>Seguir leyendo ▶</button>
   <button id="btnSoloBiblioteca">Ver lo escaneado 📚</button>
   <div id="errorInicio"></div>
 </div>
@@ -366,6 +406,20 @@ const MOV_REARME       = 0.10;  // cuánto tiene que correrse el recuadro para h
 const ESPERA_POST      = 900;   // ms de descanso después de capturar
 const MAX_LADO         = 2000;  // la foto guardada no pasa de este lado, en píxeles
 const CALIDAD_JPEG     = 0.82;
+
+/* Partir el libro abierto en dos hojas (botón «Doble») */
+const PROPORCION_DOBLE = 1.15;  // más ancho que esto (ancho/alto) es un libro abierto, no una hoja
+const ANCHO_PLIEGUE    = 240;   // resolución a la que se busca la sombra del medio
+const BANDA_PLIEGUE    = 0.15;  // el corte se busca en el centro ± este %
+const HUNDIMIENTO_MIN  = 0.06;  // qué tan oscura tiene que ser la sombra del medio para hacerle caso
+const MARGEN_PLIEGUE   = 0.012; // se descarta esto a cada lado del corte, es la curva del papel
+
+/* Lectura */
+const ZOOM_MAX         = 4;     // hasta cuánto agranda el zoom
+const ZOOM_TOQUE       = 2.6;   // a cuánto salta con dos toques seguidos
+const ESPERA_TOQUE     = 260;   // ms para distinguir un toque de dos toques
+const ARRASTRE_PAGINA  = 45;    // px que hay que deslizar para pasar de hoja
+const PASOS_AUTO       = [0, 10, 20, 40];  // segundos por hoja que va rotando el botón «Auto»
 
 /* ============================================================
    Elementos
@@ -398,8 +452,16 @@ let cajaCapturada   = null;      // dónde estaba la hoja en la última captura
 let ultimaCaja    = null;
 let huellaPrevia  = null;            // contenido de la última página capturada
 let bloqueadoHasta = 0;
+let doble         = false;           // el libro abierto se guarda como dos hojas
 let paginas       = [];              // {id, blob, url, ancho, alto, fecha}
 let indiceLectura = 0;
+
+/* lectura */
+let zoom          = 1;
+let desX          = 0, desY = 0;     // desplazamiento de la hoja, en px de pantalla
+let segundosAuto  = 0;               // 0 = avance automático apagado
+let relojAuto     = null;
+let candadoPantalla = null;          // para que no se apague la pantalla leyendo
 
 const lienzoAnalisis = document.createElement("canvas");
 const ctxAnalisis    = lienzoAnalisis.getContext("2d", { willReadFrequently: true });
@@ -708,6 +770,79 @@ function seMovio(a, b) {
 }
 
 /* ============================================================
+   Libro abierto → dos hojas
+   ------------------------------------------------------------
+   Una foto de un libro abierto entra como una sola imagen apaisada,
+   ilegible en un celular. La partimos por el pliegue: la costura del
+   medio hace una sombra, así que buscamos la columna más oscura cerca
+   del centro. Si no hay sombra (luz muy pareja) cortamos por la mitad,
+   que es donde cae el pliegue de todos modos.
+   ============================================================ */
+const lienzoPliegue = document.createElement("canvas");
+const ctxPliegue    = lienzoPliegue.getContext("2d", { willReadFrequently: true });
+
+function buscarPliegue(gris, ancho, alto) {
+  const columnas = new Float32Array(ancho);
+  for (let x = 0; x < ancho; x++) {
+    let suma = 0;
+    for (let y = 0; y < alto; y++) suma += gris[y * ancho + x];
+    columnas[x] = suma / alto;
+  }
+
+  // la sombra del pliegue es ancha; sin suavizar gana cualquier renglón oscuro
+  const radio = Math.max(1, Math.round(ancho * 0.012));
+  const suave = new Float32Array(ancho);
+  for (let x = 0; x < ancho; x++) {
+    let suma = 0, cuenta = 0;
+    for (let i = Math.max(0, x - radio); i <= Math.min(ancho - 1, x + radio); i++) {
+      suma += columnas[i];
+      cuenta++;
+    }
+    suave[x] = suma / cuenta;
+  }
+
+  const desde = Math.round(ancho * (0.5 - BANDA_PLIEGUE));
+  const hasta = Math.round(ancho * (0.5 + BANDA_PLIEGUE));
+  let corte = Math.round(ancho / 2), minimo = Infinity;
+  for (let x = desde; x <= hasta; x++) {
+    if (suave[x] < minimo) { minimo = suave[x]; corte = x; }
+  }
+
+  // referencia: el papel a los costados, para saber si la sombra existe de verdad
+  let papel = 0, cuenta = 0;
+  for (let x = 0; x < ancho; x++) {
+    if (x < desde * 0.6 || x > hasta + (ancho - hasta) * 0.4) { papel += suave[x]; cuenta++; }
+  }
+  papel = cuenta ? papel / cuenta : 0;
+
+  return { x: corte / ancho, hundimiento: papel > 0 ? (papel - minimo) / papel : 0 };
+}
+
+// recibe y devuelve recortes en píxeles del video
+function partirEnDos(fuente, recorte) {
+  if (recorte.w / recorte.h < PROPORCION_DOBLE) return null;   // una hoja sola es más alta que ancha
+
+  const ancho = ANCHO_PLIEGUE;
+  const alto  = Math.max(1, Math.round(ancho * recorte.h / recorte.w));
+  lienzoPliegue.width  = ancho;
+  lienzoPliegue.height = alto;
+  ctxPliegue.drawImage(fuente, recorte.x, recorte.y, recorte.w, recorte.h, 0, 0, ancho, alto);
+
+  const gris    = aGrises(ctxPliegue.getImageData(0, 0, ancho, alto).data, ancho, alto);
+  const pliegue = buscarPliegue(gris, ancho, alto);
+  const corte   = pliegue.hundimiento >= HUNDIMIENTO_MIN ? pliegue.x : 0.5;
+
+  const anchoIzq = (corte - MARGEN_PLIEGUE) * recorte.w;
+  const anchoDer = (1 - corte - MARGEN_PLIEGUE) * recorte.w;
+  if (anchoIzq < recorte.w * 0.2 || anchoDer < recorte.w * 0.2) return null;   // corte absurdo
+
+  return [
+    { x: recorte.x, y: recorte.y, w: anchoIzq, h: recorte.h },
+    { x: recorte.x + (corte + MARGEN_PLIEGUE) * recorte.w, y: recorte.y, w: anchoDer, h: recorte.h }
+  ];
+}
+
+/* ============================================================
    Bucle principal
    ============================================================ */
 function bucleAnalisis() {
@@ -841,34 +976,21 @@ async function capturar(caja) {
 
   // un poco de margen para no comerle el borde a la hoja
   const margen = 0.012;
-  const x = Math.max(0, zona.x - margen) * video.videoWidth;
-  const y = Math.max(0, zona.y - margen) * video.videoHeight;
-  const w = Math.min(1 - zona.x + margen, zona.w + margen * 2) * video.videoWidth;
-  const h = Math.min(1 - zona.y + margen, zona.h + margen * 2) * video.videoHeight;
+  const recorte = {
+    x: Math.max(0, zona.x - margen) * video.videoWidth,
+    y: Math.max(0, zona.y - margen) * video.videoHeight,
+    w: Math.min(1 - zona.x + margen, zona.w + margen * 2) * video.videoWidth,
+    h: Math.min(1 - zona.y + margen, zona.h + margen * 2) * video.videoHeight
+  };
 
-  const escala = Math.min(1, MAX_LADO / Math.max(w, h));
-  const destinoW = Math.max(1, Math.round(w * escala));
-  const destinoH = Math.max(1, Math.round(h * escala));
+  const trozos = (doble && partirEnDos(video, recorte)) || [recorte];
 
-  lienzoCaptura.width  = destinoW;
-  lienzoCaptura.height = destinoH;
-  const ctx = lienzoCaptura.getContext("2d");
-  ctx.drawImage(video, x, y, w, h, 0, 0, destinoW, destinoH);
-
-  if (contraste) realzar(ctx, destinoW, destinoH);
-
-  const blob = await new Promise((r) => lienzoCaptura.toBlob(r, "image/jpeg", CALIDAD_JPEG));
-  if (!blob) return;
-
-  try {
-    const registro = { blob, ancho: destinoW, alto: destinoH, fecha: Date.now() };
-    registro.id = await guardarEnBD(registro);
-    registro.url = URL.createObjectURL(blob);
-    paginas.push(registro);
-  } catch (e) {
-    marcarEstado("No se pudo guardar (¿sin espacio?)", "error");
-    return;
+  let guardadas = 0;
+  for (const trozo of trozos) {
+    if (!(await guardarRecorte(trozo))) break;
+    guardadas++;
   }
+  if (guardadas === 0) return;
 
   bloqueadoHasta = Date.now() + ESPERA_POST;
   cuadrosQuieto = 0;
@@ -879,7 +1001,37 @@ async function capturar(caja) {
   destello.classList.remove("dispara");
   void destello.offsetWidth;          // reinicia la animación
   destello.classList.add("dispara");
-  marcarEstado(`Página ${paginas.length} guardada ✓`, "ok");
+  marcarEstado(guardadas === 2
+    ? `Páginas ${paginas.length - 1} y ${paginas.length} guardadas ✓`
+    : `Página ${paginas.length} guardada ✓`, "ok");
+}
+
+// recorta un pedazo del video, lo mejora y lo guarda; devuelve si salió bien
+async function guardarRecorte(recorte) {
+  const escala = Math.min(1, MAX_LADO / Math.max(recorte.w, recorte.h));
+  const destinoW = Math.max(1, Math.round(recorte.w * escala));
+  const destinoH = Math.max(1, Math.round(recorte.h * escala));
+
+  lienzoCaptura.width  = destinoW;
+  lienzoCaptura.height = destinoH;
+  const ctx = lienzoCaptura.getContext("2d");
+  ctx.drawImage(video, recorte.x, recorte.y, recorte.w, recorte.h, 0, 0, destinoW, destinoH);
+
+  if (contraste) realzar(ctx, destinoW, destinoH);
+
+  const blob = await new Promise((r) => lienzoCaptura.toBlob(r, "image/jpeg", CALIDAD_JPEG));
+  if (!blob) return false;
+
+  try {
+    const registro = { blob, ancho: destinoW, alto: destinoH, fecha: Date.now() };
+    registro.id = await guardarEnBD(registro);
+    registro.url = URL.createObjectURL(blob);
+    paginas.push(registro);
+    return true;
+  } catch (e) {
+    marcarEstado("No se pudo guardar (¿sin espacio?)", "error");
+    return false;
+  }
 }
 
 // estira el contraste para que la letra salga negra y el papel blanco
@@ -983,7 +1135,13 @@ async function borrarPagina(indice) {
 
 /* ============================================================
    Lector
+   ------------------------------------------------------------
+   Una hoja fotografiada entera no se lee en un celular: hace falta
+   zoom. Los toques van por zonas, como cualquier lector de libros:
+   izquierda vuelve, derecha avanza, el centro esconde las barras.
    ============================================================ */
+const zonaLectura = $("zonaLectura");
+
 function abrirLector(indice) {
   indiceLectura = indice;
   mostrar("lector");
@@ -995,10 +1153,16 @@ function pintarLector() {
   if (!pagina) return;
   if (!pagina.url) pagina.url = URL.createObjectURL(pagina.blob);
 
+  reiniciarZoom();
   $("hoja").src = pagina.url;
   $("posicion").textContent = `${indiceLectura + 1} / ${paginas.length}`;
   $("btnAnterior").disabled  = indiceLectura === 0;
   $("btnSiguiente").disabled = indiceLectura >= paginas.length - 1;
+
+  recordarPosicion();
+  precargar(indiceLectura + 1);
+  precargar(indiceLectura - 1);
+  programarAuto();
 }
 
 function pasarPagina(paso) {
@@ -1008,18 +1172,252 @@ function pasarPagina(paso) {
   pintarLector();
 }
 
-// deslizar con el dedo, como cualquier lector
-let tocoEnX = null;
-$("zonaLectura").addEventListener("touchstart", (ev) => {
-  tocoEnX = ev.touches[0].clientX;
-}, { passive: true });
+// decodificar la hoja de al lado ahora evita el parpadeo al pasarla
+function precargar(indice) {
+  const pagina = paginas[indice];
+  if (!pagina) return;
+  if (!pagina.url) pagina.url = URL.createObjectURL(pagina.blob);
+  new Image().src = pagina.url;
+}
 
-$("zonaLectura").addEventListener("touchend", (ev) => {
-  if (tocoEnX === null) return;
-  const delta = ev.changedTouches[0].clientX - tocoEnX;
-  if (Math.abs(delta) > 45) pasarPagina(delta < 0 ? 1 : -1);
-  tocoEnX = null;
-}, { passive: true });
+/* Dónde quedaste leyendo. Guardamos el id de la página, no la posición:
+   si borrás una hoja del medio, la posición ya no señala lo mismo. */
+const CLAVE_POSICION = "escanerLibros.ultimaPagina";
+
+function recordarPosicion() {
+  const pagina = paginas[indiceLectura];
+  if (!pagina) return;
+  try { localStorage.setItem(CLAVE_POSICION, String(pagina.id)); } catch (e) {}
+}
+
+function posicionGuardada() {
+  let id;
+  try { id = localStorage.getItem(CLAVE_POSICION); } catch (e) { return -1; }
+  if (!id) return -1;
+  return paginas.findIndex((p) => String(p.id) === id);
+}
+
+let relojAviso = null;
+function avisar(texto) {
+  const aviso = $("avisoLector");
+  aviso.textContent = texto;
+  aviso.classList.add("visible");
+  clearTimeout(relojAviso);
+  relojAviso = setTimeout(() => aviso.classList.remove("visible"), 1400);
+}
+
+/* ------------------------------------------------------------
+   Zoom y arrastre
+   La hoja se mueve con transform (no toca el layout, va fluido).
+   El origen es la esquina 0 0 del <img>, que el flex deja centrado.
+   ------------------------------------------------------------ */
+function origenHoja() {
+  const caja = zonaLectura.getBoundingClientRect();
+  const hoja = $("hoja");
+  return {
+    x: caja.left + (zonaLectura.clientWidth  - hoja.offsetWidth)  / 2,
+    y: caja.top  + (zonaLectura.clientHeight - hoja.offsetHeight) / 2
+  };
+}
+
+// no dejamos que la hoja se escape de la pantalla
+function acotarEje(largoZona, largoHoja, escala, desplazamiento) {
+  const origen = (largoZona - largoHoja) / 2;
+  const largo  = largoHoja * escala;
+  if (largo <= largoZona) return (largoZona - largo) / 2 - origen;   // entra entera: centrada
+  return Math.min(-origen, Math.max(largoZona - origen - largo, desplazamiento));
+}
+
+function aplicarHoja() {
+  const hoja = $("hoja");
+  if (!hoja.offsetWidth) return;
+  desX = acotarEje(zonaLectura.clientWidth,  hoja.offsetWidth,  zoom, desX);
+  desY = acotarEje(zonaLectura.clientHeight, hoja.offsetHeight, zoom, desY);
+  hoja.style.transform = `translate(${desX}px, ${desY}px) scale(${zoom})`;
+}
+
+function reiniciarZoom() {
+  zoom = 1;
+  desX = 0;
+  desY = 0;
+  aplicarHoja();
+}
+
+/* Pone el zoom en `nuevo` dejando quieto el punto de la hoja que, con el
+   zoom `estado`, caía en (anclaX, anclaY): así se agranda por donde mirás. */
+function encuadrar(nuevo, estado, anclaX, anclaY, dedoX, dedoY) {
+  const origen = origenHoja();
+  const localX = (anclaX - origen.x - estado.desX) / estado.zoom;
+  const localY = (anclaY - origen.y - estado.desY) / estado.zoom;
+  zoom = nuevo;
+  desX = dedoX - origen.x - localX * nuevo;
+  desY = dedoY - origen.y - localY * nuevo;
+  aplicarHoja();
+}
+
+const acotar    = (v, min, max) => Math.min(max, Math.max(min, v));
+const distancia = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const puntoMedio = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+const punteros = new Map();
+let gesto = null;
+let ultimoToque = 0, relojToque = null;
+
+zonaLectura.addEventListener("pointerdown", (ev) => {
+  try { zonaLectura.setPointerCapture(ev.pointerId); } catch (e) {}
+  punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  if (punteros.size === 1) {
+    gesto = { tipo: "toque", x0: ev.clientX, y0: ev.clientY, desX0: desX, desY0: desY, movido: false };
+  } else if (punteros.size === 2) {
+    const [a, b] = [...punteros.values()];
+    gesto = {
+      tipo: "pellizco",
+      distancia0: Math.max(1, distancia(a, b)),
+      centro0: puntoMedio(a, b),
+      zoom0: zoom, desX0: desX, desY0: desY
+    };
+  }
+});
+
+zonaLectura.addEventListener("pointermove", (ev) => {
+  if (!punteros.has(ev.pointerId) || !gesto) return;
+  punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  if (gesto.tipo === "pellizco" && punteros.size >= 2) {
+    const [a, b] = [...punteros.values()];
+    const nuevo = acotar(gesto.zoom0 * distancia(a, b) / gesto.distancia0, 1, ZOOM_MAX);
+    const centro = puntoMedio(a, b);
+    // todo se calcula contra el arranque del gesto, así no se va acumulando error
+    encuadrar(nuevo, gesto, gesto.centro0.x, gesto.centro0.y, centro.x, centro.y);
+    return;
+  }
+
+  if (gesto.tipo === "toque") {
+    const dx = ev.clientX - gesto.x0;
+    const dy = ev.clientY - gesto.y0;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) gesto.movido = true;
+    if (zoom > 1) {
+      desX = gesto.desX0 + dx;
+      desY = gesto.desY0 + dy;
+      aplicarHoja();
+    }
+  }
+});
+
+function soltarPuntero(ev) {
+  if (!punteros.has(ev.pointerId)) return;
+  punteros.delete(ev.pointerId);
+  try { zonaLectura.releasePointerCapture(ev.pointerId); } catch (e) {}
+
+  const g = gesto;
+  if (punteros.size > 0) { gesto = null; return; }   // queda un dedo del pellizco
+  gesto = null;
+  if (!g || g.tipo !== "toque") return;
+
+  if (!g.movido) { manejarToque(ev.clientX, ev.clientY); return; }
+
+  // sin zoom, arrastrar de costado pasa la hoja
+  const dx = ev.clientX - g.x0;
+  if (zoom === 1 && Math.abs(dx) > ARRASTRE_PAGINA) pasarPagina(dx < 0 ? 1 : -1);
+}
+
+zonaLectura.addEventListener("pointerup", soltarPuntero);
+zonaLectura.addEventListener("pointercancel", soltarPuntero);
+
+function manejarToque(x, y) {
+  const caja = zonaLectura.getBoundingClientRect();
+  const relativo = (x - caja.left) / caja.width;
+  // con zoom, los costados sirven para mirar, no para pasar de hoja
+  const alCentro = zoom > 1 || (relativo > 0.33 && relativo < 0.67);
+
+  if (!alCentro) {
+    ultimoToque = 0;
+    pasarPagina(relativo <= 0.33 ? -1 : 1);
+    return;
+  }
+
+  const ahora = Date.now();
+  if (ahora - ultimoToque < ESPERA_TOQUE) {   // dos toques seguidos: zoom
+    ultimoToque = 0;
+    clearTimeout(relojToque);
+    if (zoom > 1) { reiniciarZoom(); avisar("Zoom 1×"); }
+    else { encuadrar(ZOOM_TOQUE, { zoom, desX, desY }, x, y, x, y); avisar(`Zoom ${ZOOM_TOQUE}×`); }
+    return;
+  }
+
+  // el centro espera un momento por si venía un segundo toque
+  ultimoToque = ahora;
+  clearTimeout(relojToque);
+  relojToque = setTimeout(() => vistas.lector.classList.toggle("inmersivo"), ESPERA_TOQUE);
+}
+
+$("hoja").addEventListener("load", aplicarHoja);
+window.addEventListener("resize", aplicarHoja);
+
+/* ------------------------------------------------------------
+   Lectura automática: la hoja pasa sola cada tantos segundos.
+   ------------------------------------------------------------ */
+function programarAuto() {
+  clearTimeout(relojAuto);
+  const barra = $("avanceAuto");
+  barra.style.transition = "none";
+  barra.style.width = "0";
+
+  if (!segundosAuto || !vistas.lector.classList.contains("activa")) return;
+
+  void barra.offsetWidth;                 // reinicia la animación
+  barra.style.transition = `width ${segundosAuto}s linear`;
+  barra.style.width = "100%";
+
+  relojAuto = setTimeout(() => {
+    if (indiceLectura >= paginas.length - 1) {
+      detenerAuto();
+      avisar("Fin del libro");
+      return;
+    }
+    pasarPagina(1);
+  }, segundosAuto * 1000);
+}
+
+function detenerAuto() {
+  segundosAuto = 0;
+  clearTimeout(relojAuto);
+  const barra = $("avanceAuto");
+  barra.style.transition = "none";
+  barra.style.width = "0";
+  $("btnLeerSolo").textContent = "Auto ▶";
+  $("btnLeerSolo").classList.remove("activo");
+  soltarPantalla();
+}
+
+function alternarAuto() {
+  const paso = (PASOS_AUTO.indexOf(segundosAuto) + 1) % PASOS_AUTO.length;
+  segundosAuto = PASOS_AUTO[paso];
+
+  if (!segundosAuto) { detenerAuto(); avisar("Avance automático apagado"); return; }
+
+  $("btnLeerSolo").textContent = `Auto ${segundosAuto}s`;
+  $("btnLeerSolo").classList.add("activo");
+  avisar(`Pasa sola cada ${segundosAuto} s`);
+  tomarPantalla();
+  programarAuto();
+}
+
+// leyendo sin tocar nada, la pantalla se apaga sola: se lo pedimos al navegador
+async function tomarPantalla() {
+  if (!navigator.wakeLock || candadoPantalla) return;
+  try {
+    candadoPantalla = await navigator.wakeLock.request("screen");
+    candadoPantalla.addEventListener("release", () => { candadoPantalla = null; });
+  } catch (e) { /* el navegador puede negarlo; no es grave */ }
+}
+
+function soltarPantalla() {
+  if (!candadoPantalla) return;
+  candadoPantalla.release().catch(() => {});
+  candadoPantalla = null;
+}
 
 async function compartirPagina() {
   const pagina = paginas[indiceLectura];
@@ -1154,6 +1552,10 @@ function mostrar(nombre) {
     seccion.classList.toggle("activa", clave === nombre);
   }
   if (nombre === "biblioteca") pintarBiblioteca();
+  if (nombre !== "lector") {
+    detenerAuto();
+    vistas.lector.classList.remove("inmersivo");
+  }
 }
 
 /* ============================================================
@@ -1164,6 +1566,11 @@ $("btnIniciar").addEventListener("click", iniciarCamara);
 $("btnSoloBiblioteca").addEventListener("click", () => {
   $("inicio").style.display = "none";
   mostrar("biblioteca");
+});
+
+$("btnSeguir").addEventListener("click", () => {
+  $("inicio").style.display = "none";
+  abrirLector(Math.max(0, posicionGuardada()));
 });
 
 $("irBiblioteca").addEventListener("click", () => mostrar("biblioteca"));
@@ -1201,8 +1608,16 @@ $("btnCamara").addEventListener("click", async () => {
 
 $("btnLuz").addEventListener("click", alternarLuz);
 
+$("btnDoble").addEventListener("click", () => {
+  doble = !doble;
+  $("btnDoble").textContent = doble ? "Doble ✅" : "Doble 📖";
+  $("btnDoble").classList.toggle("activo", doble);
+  marcarEstado(doble ? "El libro abierto se guarda como dos hojas" : "Cada foto es una hoja");
+});
+
 $("btnAnterior").addEventListener("click", () => pasarPagina(-1));
 $("btnSiguiente").addEventListener("click", () => pasarPagina(1));
+$("btnLeerSolo").addEventListener("click", alternarAuto);
 $("btnCompartir").addEventListener("click", compartirPagina);
 $("btnBorrarHoja").addEventListener("click", () => borrarPagina(indiceLectura));
 
@@ -1222,8 +1637,35 @@ $("btnBorrarTodo").addEventListener("click", async () => {
   pintarBiblioteca();
 });
 
+// el teclado sirve en la compu y con teclados bluetooth
+document.addEventListener("keydown", (ev) => {
+  if (!vistas.lector.classList.contains("activa")) return;
+
+  if (ev.key === "ArrowRight" || ev.key === "PageDown" || ev.key === " ") { pasarPagina(1); ev.preventDefault(); }
+  else if (ev.key === "ArrowLeft" || ev.key === "PageUp") { pasarPagina(-1); ev.preventDefault(); }
+  else if (ev.key === "Escape") {
+    if (zoom > 1) reiniciarZoom();
+    else if (vistas.lector.classList.contains("inmersivo")) vistas.lector.classList.remove("inmersivo");
+    else mostrar("biblioteca");
+  }
+  else if (ev.key === "+" || ev.key === "=") {
+    const caja = zonaLectura.getBoundingClientRect();
+    encuadrar(acotar(zoom * 1.4, 1, ZOOM_MAX), { zoom, desX, desY },
+              caja.left + caja.width / 2, caja.top + caja.height / 2,
+              caja.left + caja.width / 2, caja.top + caja.height / 2);
+  }
+  else if (ev.key === "-") {
+    const caja = zonaLectura.getBoundingClientRect();
+    encuadrar(acotar(zoom / 1.4, 1, ZOOM_MAX), { zoom, desX, desY },
+              caja.left + caja.width / 2, caja.top + caja.height / 2,
+              caja.left + caja.width / 2, caja.top + caja.height / 2);
+  }
+});
+
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && stream) video.play().catch(() => {});
+  // el candado de pantalla se suelta solo al irse de la app: hay que volver a pedirlo
+  if (!document.hidden && segundosAuto) tomarPantalla();
 });
 window.addEventListener("pagehide", detenerCamara);
 
@@ -1241,17 +1683,28 @@ window.addEventListener("pagehide", detenerCamara);
 
   if (paginas.length > 0) {
     $("btnSoloBiblioteca").textContent = `Ver lo escaneado 📚 (${paginas.length})`;
+
+    const dondeQuedaste = posicionGuardada();
+    if (dondeQuedaste >= 0) {
+      $("btnSeguir").hidden = false;
+      $("btnSeguir").textContent = `Seguir leyendo ▶ (${dondeQuedaste + 1}/${paginas.length})`;
+    }
   }
 })();
 
 // para las pruebas automatizadas
 window.__escaner = {
-  detectarPagina, huellaDe, diferencia, aGrises,
+  detectarPagina, huellaDe, diferencia, aGrises, buscarPliegue, partirEnDos, acotarEje,
   get paginas()       { return paginas; },
   get huellaPrevia()  { return huellaPrevia; },
   get rearmado()      { return rearmado; },
   get cuadrosQuieto() { return cuadrosQuieto; },
-  get ultimaCaja()    { return ultimaCaja; }
+  get ultimaCaja()    { return ultimaCaja; },
+  get doble()         { return doble; },
+  get indiceLectura() { return indiceLectura; },
+  get zoom()          { return zoom; },
+  get desplazamiento(){ return { x: desX, y: desY }; },
+  get segundosAuto()  { return segundosAuto; }
 };
 </script>
 </body>
