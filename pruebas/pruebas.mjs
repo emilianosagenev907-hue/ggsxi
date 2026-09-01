@@ -276,6 +276,118 @@ async function principal() {
   await pagina.click("#btnSeguir");
   esperar(await pagina.textContent("#posicion") === `3 / ${total}`, "y abre justo donde dejaste de leer");
 
+  /* ---------- la misma app, pero en una computadora ----------
+     Otra pestaña del mismo contexto: comparte la biblioteca ya escaneada.
+     Cerramos la del celular para que su escáner no siga guardando hojas. */
+  await pagina.close();
+
+  console.log("\nEn la computadora");
+  const pc = await contexto.newPage();
+  pc.on("pageerror", (e) => errores.push(String(e)));
+  await pc.setViewportSize({ width: 1440, height: 900 });
+  await pc.goto(`http://127.0.0.1:${puerto}/index.html`);
+  await pc.waitForFunction(() => window.__escaner && window.__escaner.paginas.length > 0);
+  await pc.click("#btnIniciar");
+  await pc.waitForSelector("#listaCamaras:not([hidden])", { timeout: 8000 });
+
+  esperar(await pc.locator("#btnCamara").isHidden(), "en pantalla ancha, «Girar» deja paso al selector de cámaras");
+  esperar((await pc.locator("#listaCamaras option").count()) === 2, "el selector lista las dos webcams (y no el micrófono)");
+  // la cámara puede informar un deviceId que no está en la lista; el selector
+  // no tiene que quedar en blanco por eso
+  esperar(await pc.evaluate(() => document.getElementById("listaCamaras").selectedIndex) >= 0,
+          "el selector siempre muestra alguna cámara, nunca en blanco");
+
+  await pc.selectOption("#listaCamaras", "webcam-usb");
+  await pc.waitForTimeout(500);
+  const pedido = await pc.evaluate(() => window.__camara.ultimaPeticion.video);
+  esperar(pedido.deviceId && pedido.deviceId.exact === "webcam-usb", "elegir una cámara la pide por deviceId");
+  esperar(!pedido.facingMode, "y deja de pedir la cámara trasera, que en una PC no existe");
+
+  const anchoBoton = (await pc.locator("#btnAuto").boundingBox()).width;
+  esperar(anchoBoton < 260, `los botones no se estiran a lo ancho de la pantalla (${Math.round(anchoBoton)} px)`);
+
+  console.log("\nTraer fotos de la computadora");
+  await pc.click("#irBiblioteca");
+  const antesDeImportar = await pc.evaluate(() => window.__escaner.paginas.length);
+
+  // dos fotos con distinto ancho, y a propósito con los nombres al revés
+  await pc.evaluate(async () => {
+    const foto = async (ancho, nombre) => {
+      const lienzo = document.createElement("canvas");
+      lienzo.width = ancho; lienzo.height = 800;
+      const ctx = lienzo.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, ancho, 800);
+      ctx.fillStyle = "#222";
+      for (let y = 60; y < 740; y += 40) ctx.fillRect(40, y, ancho - 120, 12);
+      const blob = await new Promise((r) => lienzo.toBlob(r, "image/jpeg", 0.9));
+      return new File([blob], nombre, { type: "image/jpeg" });
+    };
+    await window.__escaner.importarArchivos([await foto(640, "pagina-10.jpg"), await foto(600, "pagina-2.jpg")]);
+  });
+
+  const importadas = await pc.evaluate((antes) => window.__escaner.paginas.slice(antes).map((p) => p.ancho), antesDeImportar);
+  esperar(importadas.length === 2, `entran las fotos arrastradas de la compu (entraron ${importadas.length})`);
+  esperar(importadas[0] === 600 && importadas[1] === 640, "y quedan ordenadas por nombre: la 2 antes que la 10");
+  esperar((await pc.locator("#grilla .tarjeta").count()) === antesDeImportar + 2, "la biblioteca las muestra sin recargar");
+
+  // y ahora soltando el archivo de verdad encima de la ventana
+  const soltado = await pc.evaluateHandle(async () => {
+    const lienzo = document.createElement("canvas");
+    lienzo.width = 620; lienzo.height = 800;
+    const ctx = lienzo.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 620, 800);
+    ctx.fillStyle = "#222";
+    for (let y = 60; y < 740; y += 40) ctx.fillRect(40, y, 500, 12);
+    const blob = await new Promise((r) => lienzo.toBlob(r, "image/jpeg", 0.9));
+    const datos = new DataTransfer();
+    datos.items.add(new File([blob], "soltada.jpg", { type: "image/jpeg" }));
+    return datos;
+  });
+
+  const antesDeSoltar = await pc.evaluate(() => window.__escaner.paginas.length);
+  await pc.dispatchEvent("body", "dragenter", { dataTransfer: soltado });
+  esperar(await pc.evaluate(() => document.body.classList.contains("soltando")),
+          "al arrastrar una foto encima, avisa dónde soltarla");
+
+  await pc.dispatchEvent("body", "drop", { dataTransfer: soltado });
+  await pc.waitForFunction((antes) => window.__escaner.paginas.length > antes, antesDeSoltar, { timeout: 8000 });
+  esperar(!(await pc.evaluate(() => document.body.classList.contains("soltando"))), "y el aviso se va al soltar");
+  esperar(await pc.evaluate(() => window.__escaner.paginas.length) === antesDeSoltar + 1,
+          "la foto soltada entra a la biblioteca");
+
+  console.log("\nMouse y teclado");
+  const totalPC = await pc.evaluate(() => window.__escaner.paginas.length);
+  await pc.click("#grilla .tarjeta img");
+  esperar(await pc.textContent("#posicion") === `1 / ${totalPC}`, "abre el lector en la hoja que tocaste");
+
+  const zonaPC = await pc.locator("#zonaLectura").boundingBox();
+  await pc.mouse.move(zonaPC.x + zonaPC.width / 2, zonaPC.y + zonaPC.height / 2);
+  await pc.mouse.wheel(0, 120);
+  await pc.waitForTimeout(150);
+  esperar(await pc.textContent("#posicion") === `2 / ${totalPC}`, "la rueda del mouse pasa de hoja");
+  await pc.mouse.wheel(0, -120);
+  await pc.waitForTimeout(150);
+  esperar(await pc.textContent("#posicion") === `1 / ${totalPC}`, "y para el otro lado vuelve");
+
+  await pc.keyboard.down("Control");
+  await pc.mouse.wheel(0, -240);
+  await pc.keyboard.up("Control");
+  await pc.waitForTimeout(150);
+  esperar(await pc.evaluate(() => window.__escaner.zoom) > 1, "Ctrl + rueda hace zoom, como en un visor de PDF");
+
+  const paginaAntesDeRueda = await pc.textContent("#posicion");
+  await pc.mouse.wheel(0, 200);
+  await pc.waitForTimeout(150);
+  esperar(await pc.textContent("#posicion") === paginaAntesDeRueda, "con zoom, la rueda mueve la hoja en vez de pasarla");
+  esperar(await pc.evaluate(() => window.__escaner.desplazamiento.y) < 0, "y la mueve para abajo");
+
+  await pc.keyboard.press("Escape");
+  esperar(await pc.evaluate(() => window.__escaner.zoom) === 1, "Escape vuelve al tamaño normal");
+
+  await pc.keyboard.press("f");
+  await pc.waitForTimeout(300);
+  esperar(true, "la tecla F no rompe nada (pantalla completa)");
+
   console.log("\nSin errores en la consola");
   esperar(errores.length === 0, "el navegador no tiró ningún error" + (errores.length ? ": " + errores[0] : ""));
 

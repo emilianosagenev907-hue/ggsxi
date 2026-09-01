@@ -286,6 +286,57 @@
       pointer-events: none;
     }
 
+    /* ---------- soltar fotos desde la computadora ---------- */
+    #soltar {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      text-align: center;
+      padding: 40px;
+      background: rgba(10,132,255,.22);
+      border: 3px dashed var(--azul);
+      backdrop-filter: blur(2px);
+    }
+    body.soltando #soltar { display: flex; }
+
+    /* ---------- pantalla ancha (computadora) ----------
+       El mismo HTML, pero sin botones de 700 px de ancho: las cosas se
+       juntan en el medio, que es donde está mirando el ojo. */
+    /* en el celular no hace falta: el toque en el centro ya deja la hoja sola,
+       y el botón no entra en pantallas de 320 px */
+    #btnPantalla { display: none; }
+
+    @media (min-width: 820px) {
+      #btnPantalla { display: inline-block; }
+      #controles {
+        grid-template-columns: 240px auto 240px;
+        justify-content: center;
+        gap: 24px;
+      }
+      #pieLector { justify-content: center; }
+      #posicion  { flex: 0 0 auto; min-width: 110px; }
+      #pieBiblioteca { justify-content: center; }
+      #pieBiblioteca button { flex: 0 0 auto; min-width: 190px; }
+      #grilla { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+      #listaCamaras { max-width: 240px; }
+    }
+
+    #listaCamaras {
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--texto);
+      background: var(--panel);
+      border: 1px solid var(--borde);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 42px;
+      width: 100%;
+    }
+
     /* ---------- arranque ---------- */
     #inicio {
       position: fixed;
@@ -333,6 +384,7 @@
     <div class="col der">
       <button id="btnContraste" class="activo">Contraste ✅</button>
       <button id="btnCamara">Girar 🔄</button>
+      <select id="listaCamaras" hidden aria-label="Elegir cámara"></select>
     </div>
   </div>
 </section>
@@ -348,9 +400,11 @@
   <div id="grilla"></div>
 
   <div id="pieBiblioteca">
+    <button id="btnAgregar">Agregar fotos 📂</button>
     <button id="btnPdf">Exportar PDF 📄</button>
     <button id="btnBorrarTodo" class="peligro">Borrar todo</button>
   </div>
+  <input type="file" id="archivos" accept="image/*" multiple hidden>
 </section>
 
 <!-- ==================== LECTOR ==================== -->
@@ -370,6 +424,7 @@
     <button class="icono" id="btnAnterior">‹</button>
     <span id="posicion">0 / 0</span>
     <button class="icono" id="btnLeerSolo">Auto ▶</button>
+    <button class="icono" id="btnPantalla" aria-label="Pantalla completa">⛶</button>
     <button class="icono" id="btnCompartir" aria-label="Compartir esta hoja">↗</button>
     <button class="icono peligro" id="btnBorrarHoja">🗑</button>
     <button class="icono" id="btnSiguiente">›</button>
@@ -379,12 +434,15 @@
 <!-- ==================== ARRANQUE ==================== -->
 <div id="inicio">
   <h1>Escáner de libros 📖</h1>
-  <p>Apoyá el libro con buena luz y apuntá a la hoja. Cuando la página quede quieta, se captura sola.</p>
+  <p>Apoyá el libro con buena luz y apuntá a la hoja. Cuando la página quede quieta, se captura sola.
+     En la computadora también podés arrastrar fotos que ya tengas sacadas.</p>
   <button class="primario" id="btnIniciar">Activar cámara 🎥</button>
   <button id="btnSeguir" hidden>Seguir leyendo ▶</button>
   <button id="btnSoloBiblioteca">Ver lo escaneado 📚</button>
   <div id="errorInicio"></div>
 </div>
+
+<div id="soltar">Soltá las fotos acá y se agregan a la biblioteca 📂</div>
 
 <script>
 "use strict";
@@ -442,6 +500,7 @@ const vistas = {
    ============================================================ */
 let stream        = null;
 let camara        = "environment";   // el libro se escanea con la trasera
+let camaraElegida = null;            // deviceId, cuando hay varias (típico de una PC)
 let auto          = true;
 let contraste     = true;
 let analizando    = false;
@@ -525,11 +584,10 @@ async function iniciarCamara() {
   detenerCamara();
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: camara },
-        width:  { ideal: 1920 },
-        height: { ideal: 1080 }
-      },
+      video: Object.assign(
+        { width: { ideal: 1920 }, height: { ideal: 1080 } },
+        camaraElegida ? { deviceId: { exact: camaraElegida } } : { facingMode: { ideal: camara } }
+      ),
       audio: false
     });
 
@@ -539,6 +597,7 @@ async function iniciarCamara() {
 
     $("inicio").style.display = "none";
     prepararLuz();
+    await listarCamaras();
     mostrar("camara");
 
     if (!analizando) {
@@ -580,6 +639,43 @@ function prepararLuz() {
   const pista = stream && stream.getVideoTracks()[0];
   const capacidades = pista && pista.getCapabilities ? pista.getCapabilities() : {};
   $("btnLuz").hidden = !("torch" in capacidades);
+}
+
+/* En el celular alcanza con «Girar»: hay una adelante y otra atrás. En una
+   computadora es normal tener la webcam de la pantalla y otra USB mejor, así
+   que ahí conviene elegirla por nombre. Los nombres solo aparecen después de
+   dar el permiso, por eso esto corre recién cuando la cámara ya está andando. */
+async function listarCamaras() {
+  const lista = $("listaCamaras");
+  if (!navigator.mediaDevices.enumerateDevices) return;
+
+  let camaras = [];
+  try {
+    camaras = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  } catch (e) { return; }
+
+  const pantallaAncha = window.matchMedia("(min-width: 820px)").matches;
+  if (camaras.length < 2 || !pantallaAncha) { lista.hidden = true; return; }
+
+  lista.textContent = "";
+  camaras.forEach((camara, i) => {
+    const opcion = document.createElement("option");
+    opcion.value = camara.deviceId;
+    opcion.textContent = camara.label || `Cámara ${i + 1}`;
+    lista.appendChild(opcion);
+  });
+
+  /* Marcar la que está en uso, pero solo si figura en la lista: el deviceId que
+     informa la pista no siempre es uno de los de enumerateDevices, y asignarlo
+     igual deja el selector en blanco, sin saber qué cámara está andando. */
+  const disponibles = [...lista.options].map((o) => o.value);
+  const pista = stream && stream.getVideoTracks()[0];
+  const enUso = pista && pista.getSettings ? pista.getSettings().deviceId : null;
+  const marcar = [enUso, camaraElegida].find((id) => id && disponibles.includes(id));
+  if (marcar) lista.value = marcar;
+
+  lista.hidden = false;
+  $("btnCamara").hidden = true;      // el selector ya hace lo mismo y mejor
 }
 
 async function alternarLuz() {
@@ -987,7 +1083,7 @@ async function capturar(caja) {
 
   let guardadas = 0;
   for (const trozo of trozos) {
-    if (!(await guardarRecorte(trozo))) break;
+    if (!(await guardarRecorte(video, trozo))) break;
     guardadas++;
   }
   if (guardadas === 0) return;
@@ -1006,8 +1102,9 @@ async function capturar(caja) {
     : `Página ${paginas.length} guardada ✓`, "ok");
 }
 
-// recorta un pedazo del video, lo mejora y lo guarda; devuelve si salió bien
-async function guardarRecorte(recorte) {
+// recorta un pedazo de la fuente (el video, o una foto traída de la compu),
+// lo mejora y lo guarda; devuelve si salió bien
+async function guardarRecorte(fuente, recorte) {
   const escala = Math.min(1, MAX_LADO / Math.max(recorte.w, recorte.h));
   const destinoW = Math.max(1, Math.round(recorte.w * escala));
   const destinoH = Math.max(1, Math.round(recorte.h * escala));
@@ -1015,7 +1112,7 @@ async function guardarRecorte(recorte) {
   lienzoCaptura.width  = destinoW;
   lienzoCaptura.height = destinoH;
   const ctx = lienzoCaptura.getContext("2d");
-  ctx.drawImage(video, recorte.x, recorte.y, recorte.w, recorte.h, 0, 0, destinoW, destinoH);
+  ctx.drawImage(fuente, recorte.x, recorte.y, recorte.w, recorte.h, 0, 0, destinoW, destinoH);
 
   if (contraste) realzar(ctx, destinoW, destinoH);
 
@@ -1132,6 +1229,84 @@ async function borrarPagina(indice) {
     else { indiceLectura = Math.min(indiceLectura, paginas.length - 1); pintarLector(); }
   }
 }
+
+/* ============================================================
+   Traer fotos de la computadora
+   ------------------------------------------------------------
+   En la PC lo normal es tener las fotos ya sacadas (con el celular, con una
+   cámara) y querer leerlas y armar el PDF. Entran por el mismo camino que las
+   del escáner: se achican, se les levanta el contraste si está prendido y, si
+   está prendido «Doble», se parten por el pliegue.
+   ============================================================ */
+async function importarArchivos(archivos) {
+  const fotos = [...archivos].filter((a) => a.type.startsWith("image/"));
+  if (fotos.length === 0) return;
+
+  // por nombre y con números de verdad: pagina2.jpg va antes que pagina10.jpg
+  fotos.sort((a, b) => a.name.localeCompare(b.name, "es", { numeric: true }));
+
+  const boton = $("btnAgregar");
+  const textoPrevio = boton.textContent;
+  boton.disabled = true;
+
+  let fallaron = 0;
+  for (let i = 0; i < fotos.length; i++) {
+    boton.textContent = `Agregando… ${i + 1}/${fotos.length}`;
+    let imagen;
+    try {
+      imagen = await cargarImagen(fotos[i]);
+    } catch (e) { fallaron++; continue; }
+
+    const entera = { x: 0, y: 0, w: imagen.naturalWidth, h: imagen.naturalHeight };
+    const trozos = (doble && partirEnDos(imagen, entera)) || [entera];
+    for (const trozo of trozos) {
+      if (!(await guardarRecorte(imagen, trozo))) { fallaron++; break; }
+    }
+    URL.revokeObjectURL(imagen.src);
+  }
+
+  boton.textContent = textoPrevio;
+  boton.disabled = false;
+  actualizarContadores();
+  pintarBiblioteca();
+  if (fallaron) alert(`${fallaron} de ${fotos.length} no se pudieron agregar.`);
+}
+
+function cargarImagen(archivo) {
+  return new Promise((resolve, rechazar) => {
+    const imagen = new Image();
+    imagen.onload  = () => resolve(imagen);
+    imagen.onerror = () => rechazar(new Error("no se pudo leer " + archivo.name));
+    imagen.src = URL.createObjectURL(archivo);
+  });
+}
+
+// arrastrar y soltar, que en una computadora es lo primero que uno intenta
+let arrastres = 0;   // dragenter/dragleave llegan también de los hijos: hay que contarlos
+
+document.addEventListener("dragenter", (ev) => {
+  if (![...ev.dataTransfer.types].includes("Files")) return;
+  arrastres++;
+  document.body.classList.add("soltando");
+});
+
+document.addEventListener("dragover", (ev) => {
+  if ([...ev.dataTransfer.types].includes("Files")) ev.preventDefault();
+});
+
+document.addEventListener("dragleave", () => {
+  if (--arrastres <= 0) { arrastres = 0; document.body.classList.remove("soltando"); }
+});
+
+document.addEventListener("drop", (ev) => {
+  if (![...ev.dataTransfer.types].includes("Files")) return;
+  ev.preventDefault();
+  arrastres = 0;
+  document.body.classList.remove("soltando");
+  $("inicio").style.display = "none";
+  mostrar("biblioteca");
+  importarArchivos(ev.dataTransfer.files);
+});
 
 /* ============================================================
    Lector
@@ -1354,6 +1529,43 @@ function manejarToque(x, y) {
 
 $("hoja").addEventListener("load", aplicarHoja);
 window.addEventListener("resize", aplicarHoja);
+
+/* La rueda del mouse, como en cualquier visor de PDF: Ctrl+rueda hace zoom,
+   la rueda sola pasa de hoja, y si estás con zoom la usa para subir y bajar. */
+let ruedaJuntada = 0, ruedaHasta = 0;
+
+zonaLectura.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+
+  if (ev.ctrlKey) {
+    const factor = Math.exp(-ev.deltaY * 0.002);
+    encuadrar(acotar(zoom * factor, 1, ZOOM_MAX), { zoom, desX, desY },
+              ev.clientX, ev.clientY, ev.clientX, ev.clientY);
+    return;
+  }
+
+  if (zoom > 1) {
+    desY -= ev.deltaY;
+    aplicarHoja();
+    return;
+  }
+
+  // un golpe de rueda no tiene que saltar cinco hojas
+  const ahora = Date.now();
+  if (ahora > ruedaHasta) ruedaJuntada = 0;
+  ruedaJuntada += ev.deltaY;
+  ruedaHasta = ahora + 220;
+
+  if (Math.abs(ruedaJuntada) >= 60) {
+    pasarPagina(ruedaJuntada > 0 ? 1 : -1);
+    ruedaJuntada = 0;
+  }
+}, { passive: false });
+
+function alternarPantallaCompleta() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (vistas.lector.requestFullscreen) vistas.lector.requestFullscreen().catch(() => {});
+}
 
 /* ------------------------------------------------------------
    Lectura automática: la hoja pasa sola cada tantos segundos.
@@ -1597,8 +1809,16 @@ $("btnContraste").addEventListener("click", () => {
   $("btnContraste").classList.toggle("activo", contraste);
 });
 
+$("listaCamaras").addEventListener("change", async () => {
+  camaraElegida = $("listaCamaras").value;
+  ultimaCaja = null;
+  cuadrosQuieto = 0;
+  await iniciarCamara();
+});
+
 $("btnCamara").addEventListener("click", async () => {
   $("btnCamara").disabled = true;
+  camaraElegida = null;
   camara = camara === "environment" ? "user" : "environment";
   ultimaCaja = null;
   cuadrosQuieto = 0;
@@ -1618,6 +1838,13 @@ $("btnDoble").addEventListener("click", () => {
 $("btnAnterior").addEventListener("click", () => pasarPagina(-1));
 $("btnSiguiente").addEventListener("click", () => pasarPagina(1));
 $("btnLeerSolo").addEventListener("click", alternarAuto);
+$("btnPantalla").addEventListener("click", alternarPantallaCompleta);
+
+$("btnAgregar").addEventListener("click", () => $("archivos").click());
+$("archivos").addEventListener("change", async (ev) => {
+  await importarArchivos(ev.target.files);
+  ev.target.value = "";        // así se puede volver a elegir la misma foto
+});
 $("btnCompartir").addEventListener("click", compartirPagina);
 $("btnBorrarHoja").addEventListener("click", () => borrarPagina(indiceLectura));
 
@@ -1648,6 +1875,7 @@ document.addEventListener("keydown", (ev) => {
     else if (vistas.lector.classList.contains("inmersivo")) vistas.lector.classList.remove("inmersivo");
     else mostrar("biblioteca");
   }
+  else if (ev.key === "f" || ev.key === "F") { alternarPantallaCompleta(); }
   else if (ev.key === "+" || ev.key === "=") {
     const caja = zonaLectura.getBoundingClientRect();
     encuadrar(acotar(zoom * 1.4, 1, ZOOM_MAX), { zoom, desX, desY },
@@ -1704,7 +1932,8 @@ window.__escaner = {
   get indiceLectura() { return indiceLectura; },
   get zoom()          { return zoom; },
   get desplazamiento(){ return { x: desX, y: desY }; },
-  get segundosAuto()  { return segundosAuto; }
+  get segundosAuto()  { return segundosAuto; },
+  importarArchivos
 };
 </script>
 </body>

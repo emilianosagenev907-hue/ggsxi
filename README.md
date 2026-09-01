@@ -8,8 +8,8 @@ Después las leés adentro de la misma app: zoom con los dedos, se pasa tocando 
 arranca donde lo dejaste y, si querés, **pasa las hojas solo** mientras leés. También podés
 exportar todo a un PDF.
 
-Funciona en el navegador del celular, sin instalar nada y sin servidor: las páginas quedan
-guardadas en el propio teléfono (IndexedDB).
+Anda igual en el celular y en la computadora, en el navegador, sin instalar nada y sin servidor:
+las páginas quedan guardadas en el aparato con el que las escaneaste (IndexedDB).
 
 | Archivo | Qué es |
 | --- | --- |
@@ -34,6 +34,21 @@ WhatsApp y abrirlo desde la galería no alcanza: hay que servirlo por web.
 Conviene agregarlo a la pantalla de inicio (*Añadir a pantalla de inicio*): se abre como una app
 y las páginas escaneadas siguen ahí.
 
+## Cómo abrirlo en la computadora
+
+Tres formas, de la más cómoda a la más simple:
+
+1. **La misma dirección de GitHub Pages** que en el celular. Es lo más práctico: la abrís en
+   los dos lados.
+2. **Doble clic en `index.html`.** En Chrome y Edge la cámara anda igual desde un archivo suelto
+   (te va a pedir permiso). Las páginas se guardan lo mismo.
+3. Si tu navegador se niega a dar la cámara desde un archivo suelto, servila local: parada en la
+   carpeta, `python -m http.server` y entrás a `http://localhost:8000`.
+
+Ojo: **la biblioteca no es la misma** en la computadora y en el teléfono. Cada navegador guarda
+lo suyo. Para pasar las páginas de uno a otro, exportá el PDF, o mandate las fotos y usá
+**Agregar fotos** del otro lado.
+
 ## Cómo se usa
 
 ### Escanear
@@ -53,6 +68,19 @@ Botones del escáner:
 - **Girar** — cambia entre cámara trasera y frontal.
 - **Luz** — enciende la linterna. Solo aparece si el teléfono la deja usar desde el navegador.
 
+### En la computadora
+
+- **Elegir la cámara**: si hay más de una (la de la pantalla y una USB), en vez del botón
+  *Girar* aparece una lista con los nombres. La USB casi siempre saca mejor que la integrada.
+- **Agregar fotos 📂**: metés fotos que ya tenías sacadas, o las **arrastrás y las soltás**
+  encima de la ventana. Entran por el mismo camino que las del escáner (se achican, se les
+  levanta el contraste si está prendido, y si está prendido *Doble* se parten por el pliegue).
+  Se ordenan solas por nombre, con los números bien: `pagina-2` va antes que `pagina-10`.
+- Sirve también sin cámara: si tenés las fotos, la usás de lector y para armar el PDF.
+- **La rueda del mouse** pasa de hoja. **Ctrl + rueda** hace zoom, como en un visor de PDF, y
+  con zoom la rueda sube y baja por la hoja.
+- **F** para pantalla completa.
+
 ### Leer
 
 Tocá cualquier hoja de la Biblioteca y se abre el lector:
@@ -64,6 +92,8 @@ Tocá cualquier hoja de la Biblioteca y se abre el lector:
   hace zoom, hasta 4×.
 - **Auto ▶** pasa las hojas solo: 10, 20 o 40 segundos, y un toque más lo apaga. Mientras está
   prendido, la barrita verde de arriba muestra cuánto falta y la pantalla no se apaga.
+- **⛶** pone la hoja en pantalla completa (solo en pantallas anchas; en el celular ya lo hace
+  el toque en el centro).
 - Al salir y volver a entrar, arriba de todo aparece **Seguir leyendo** en la hoja donde estabas.
 - En la compu andan las flechas, la barra espaciadora, `+` / `-` y `Esc`.
 
@@ -107,11 +137,17 @@ comentario de para qué es cada uno. Si dispara de más o de menos, se tocan ah�
 
 ## Pruebas
 
-Hay pruebas automáticas que abren la app en un Chromium con una **cámara de mentira**: un canvas
-que dibuja un libro sobre una mesa oscura y que la prueba va cambiando para simular que pasás la
-hoja o que la tapás con la mano. Comprueban de punta a punta que capture sola, que parta el libro
-abierto en dos hojas verticales, que el lector haga zoom y pase de página, que la lectura
-automática avance, que vuelva a donde quedaste y que el PDF salga bien armado.
+Hay **60 comprobaciones** automáticas que abren la app en un Chromium con una **cámara de
+mentira**: un canvas que dibuja un libro sobre una mesa oscura y que la prueba va cambiando para
+simular que pasás la hoja o que la tapás con la mano. Van de punta a punta.
+
+- **Como celular** (pantalla de 420 px): que capture sola, que no repita con la hoja quieta, que
+  parta el libro abierto en dos hojas verticales, zoom, zonas de toque, avance automático,
+  volver a donde quedaste después de recargar, y el PDF con la cantidad de hojas que va.
+- **Como computadora** (1440 px): que aparezca el selector con las dos webcams y que elegir una
+  la pida por `deviceId`, que los botones no se estiren, que entren las fotos importadas y las
+  soltadas encima, ordenadas por nombre, y que la rueda del mouse pase de hoja y con Ctrl haga
+  zoom.
 
 ```sh
 npm i -D playwright        # una sola vez (o tener playwright global)

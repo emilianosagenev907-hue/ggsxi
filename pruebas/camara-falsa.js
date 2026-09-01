@@ -60,8 +60,19 @@
 
   window.__camara = {
     escena,
+    ultimaPeticion: null,
     pintar(cambios) { Object.assign(escena, cambios || {}); dibujar(); }
   };
 
-  navigator.mediaDevices.getUserMedia = async () => flujo;
+  navigator.mediaDevices.getUserMedia = async (restricciones) => {
+    window.__camara.ultimaPeticion = restricciones;
+    return flujo;
+  };
+
+  // una computadora suele tener más de una cámara: la de la pantalla y una USB
+  navigator.mediaDevices.enumerateDevices = async () => ([
+    { kind: "videoinput", deviceId: "webcam-pantalla", label: "Webcam integrada", groupId: "1" },
+    { kind: "videoinput", deviceId: "webcam-usb",      label: "Webcam USB",       groupId: "2" },
+    { kind: "audioinput", deviceId: "microfono",       label: "Micrófono",        groupId: "3" }
+  ]);
 })();
